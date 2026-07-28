@@ -45,20 +45,6 @@ Median of 3 runs, ±σ across runs. Results vary by hardware and thermal state.
 
 Slice ops yield ~1.9× throughput over single-item path at chunk≥8.
 
-## Comparison
-
-|                                    | spsc-ring | [ringbuf](https://crates.io/crates/ringbuf) | [rtrb](https://crates.io/crates/rtrb) |
-| ---------------------------------- | --------- | ------------------------------------------- | ------------------------------------- |
-| Cache-line padded                  | ✅         | ❌                                           | ✅                                     |
-| Explicit memory ordering (Acq/Rel) | ✅         | unspecified                                 | ✅                                     |
-| Zero dependencies                  | ✅         | optional dep                                | ✅                                     |
-| API surface                        | minimal   | large                                       | medium                                |
-| Bulk slice ops                     | ✅         | ✅                                           | ✅                                     |
-| `no_alloc` / static storage        | ❌         | ✅                                           | ❌                                     |
-| Async / blocking variants          | ❌         | ✅                                           | ❌                                     |
-
-Choose `spsc-ring` when you want the smallest, most auditable SPSC queue with guaranteed cache-line isolation and no transitive dependencies. Choose `ringbuf` when you need static allocation or async wrappers.
-
 ## Usage
 
 ```toml
