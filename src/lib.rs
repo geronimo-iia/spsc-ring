@@ -178,9 +178,9 @@ struct Slot<T> {
 struct RingBuffer<T> {
     slots: Box<[Slot<T>]>,
     mask: usize,
+    closed: AtomicBool, // write-once at drop — grouped with write-once mask, away from hot head/tail lines
     head: PaddedAtomicUsize,
     tail: PaddedAtomicUsize,
-    closed: AtomicBool,
 }
 
 // SAFETY: The SPSC contract is enforced by the type system — only one Producer
