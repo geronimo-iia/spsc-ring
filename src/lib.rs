@@ -236,6 +236,23 @@ impl<T> Consumer<T> {
     }
 }
 
+impl<T: Copy> Consumer<T> {
+    /// Pop as many items into `dst` as are available. Returns count popped.
+    pub fn pop_into_slice(&self, dst: &mut [T]) -> usize {
+        let mut count = 0;
+        for slot in dst.iter_mut() {
+            match self.try_pop() {
+                Some(v) => {
+                    *slot = v;
+                    count += 1;
+                }
+                None => break,
+            }
+        }
+        count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +376,71 @@ mod tests {
         let _ = tx.push_slice(&[10u32, 20]);
         let pushed = tx.push_slice(&[30u32, 40]);
         assert_eq!(pushed, 0);
+    }
+
+    #[test]
+    fn pop_into_slice_all_available() {
+        let (tx, rx) = ring(8);
+        for i in 0..4u32 {
+            tx.try_push(i).unwrap();
+        }
+        let mut dst = [0u32; 4];
+        let popped = rx.pop_into_slice(&mut dst);
+        assert_eq!(popped, 4);
+        assert_eq!(dst, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn pop_into_slice_empty_buffer() {
+        let (_tx, rx) = ring::<u32>(4);
+        let mut dst = [0u32; 4];
+        let popped = rx.pop_into_slice(&mut dst);
+        assert_eq!(popped, 0);
+        assert_eq!(dst, [0u32; 4]);
+    }
+
+    #[test]
+    fn pop_into_slice_partial_dst() {
+        let (tx, rx) = ring(8);
+        for i in 0..6u32 {
+            tx.try_push(i).unwrap();
+        }
+        let mut dst = [0u32; 3];
+        let popped = rx.pop_into_slice(&mut dst);
+        assert_eq!(popped, 3);
+        assert_eq!(dst, [0, 1, 2]);
+        assert_eq!(rx.try_pop(), Some(3));
+    }
+
+    #[test]
+    fn push_pop_slice_roundtrip_concurrent() {
+        let (tx, rx) = ring(256);
+        let data: Vec<u32> = (0..1024).collect();
+        let data_clone = data.clone();
+
+        let producer = thread::spawn(move || {
+            let mut sent = 0;
+            while sent < data_clone.len() {
+                sent += tx.push_slice(&data_clone[sent..]);
+                std::hint::spin_loop();
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut received = Vec::with_capacity(1024);
+            let mut buf = [0u32; 32];
+            while received.len() < 1024 {
+                let n = rx.pop_into_slice(&mut buf);
+                received.extend_from_slice(&buf[..n]);
+                std::hint::spin_loop();
+            }
+            received
+        });
+
+        producer.join().unwrap();
+        let received = consumer.join().unwrap();
+        let expected: Vec<u32> = (0..1024).collect();
+        assert_eq!(received, expected);
     }
 
     #[test]
