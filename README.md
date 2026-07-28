@@ -21,15 +21,15 @@ Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero de
 
 ## Comparison
 
-| | spsc-ring | [ringbuf](https://crates.io/crates/ringbuf) | [rtrb](https://crates.io/crates/rtrb) |
-|---|---|---|---|
-| Cache-line padded | ✅ | ❌ | ✅ |
-| Explicit memory ordering (Acq/Rel) | ✅ | unspecified | ✅ |
-| Zero dependencies | ✅ | optional dep | ✅ |
-| API surface | minimal | large | medium |
-| Bulk slice ops | ✅ | ✅ | ✅ |
-| `no_alloc` / static storage | ❌ | ✅ | ❌ |
-| Async / blocking variants | ❌ | ✅ | ❌ |
+|                                    | spsc-ring | [ringbuf](https://crates.io/crates/ringbuf) | [rtrb](https://crates.io/crates/rtrb) |
+| ---------------------------------- | --------- | ------------------------------------------- | ------------------------------------- |
+| Cache-line padded                  | ✅         | ❌                                           | ✅                                     |
+| Explicit memory ordering (Acq/Rel) | ✅         | unspecified                                 | ✅                                     |
+| Zero dependencies                  | ✅         | optional dep                                | ✅                                     |
+| API surface                        | minimal   | large                                       | medium                                |
+| Bulk slice ops                     | ✅         | ✅                                           | ✅                                     |
+| `no_alloc` / static storage        | ❌         | ✅                                           | ❌                                     |
+| Async / blocking variants          | ❌         | ✅                                           | ❌                                     |
 
 Choose `spsc-ring` when you want the smallest, most auditable SPSC queue with guaranteed cache-line isolation and no transitive dependencies. Choose `ringbuf` when you need static allocation or async wrappers.
 
@@ -65,17 +65,17 @@ assert_eq!(received, (0..100).collect::<Vec<_>>());
 
 ## API
 
-| Symbol | Description |
-|--------|-------------|
-| `ring<T>(capacity)` | Create buffer (capacity must be power of 2). Returns `(Producer<T>, Consumer<T>)`. |
-| `Producer::try_push(T)` | Push value. Returns `Err(value)` if full. |
-| `Consumer::try_pop()` | Pop value. Returns `None` if empty. |
-| `{Producer,Consumer}::len()` | Approximate item count. |
-| `{Producer,Consumer}::capacity()` | Buffer capacity. |
-| `Producer::is_empty()` | Returns `true` if buffer appears empty. |
-| `Producer::is_full()` | Returns `true` if buffer appears full. |
-| `Consumer::is_empty()` | Returns `true` if buffer appears empty. |
-| `Producer::push_slice(&[T])` | Push items from slice until full. Returns count pushed. Requires `T: Copy`. |
+| Symbol                               | Description                                                                         |
+| ------------------------------------ | ----------------------------------------------------------------------------------- |
+| `ring<T>(capacity)`                  | Create buffer (capacity must be power of 2). Returns `(Producer<T>, Consumer<T>)`.  |
+| `Producer::try_push(T)`              | Push value. Returns `Err(value)` if full.                                           |
+| `Consumer::try_pop()`                | Pop value. Returns `None` if empty.                                                 |
+| `{Producer,Consumer}::len()`         | Approximate item count.                                                             |
+| `{Producer,Consumer}::capacity()`    | Buffer capacity.                                                                    |
+| `Producer::is_empty()`               | Returns `true` if buffer appears empty.                                             |
+| `Producer::is_full()`                | Returns `true` if buffer appears full.                                              |
+| `Consumer::is_empty()`               | Returns `true` if buffer appears empty.                                             |
+| `Producer::push_slice(&[T])`         | Push items from slice until full. Returns count pushed. Requires `T: Copy`.         |
 | `Consumer::pop_into_slice(&mut [T])` | Pop items into slice until empty or full. Returns count popped. Requires `T: Copy`. |
 
 ## MSRV

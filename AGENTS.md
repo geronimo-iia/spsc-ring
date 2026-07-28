@@ -73,13 +73,6 @@ cargo doc --no-deps               # build rustdoc
 cargo publish --dry-run           # verify crates.io package
 ```
 
-## Versioning
-
-| Version | Content |
-|---------|---------|
-| 0.1.0 | `try_push`, `try_pop`, `ring()` |
-| 0.2.0 | `WaitStrategy`, blocking `push`/`pop` |
-
 ## Writing plans
 
 When asked to write a plan:
