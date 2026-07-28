@@ -1,13 +1,13 @@
 [package]
-name = "ring-rs"
+name = "spsc-ring"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Lock-free SPSC ring buffer — sequence-number protocol, cache-line padded, zero dependencies"
-repository = "https://github.com/geronimo-iia/ring-rs"
-homepage = "https://github.com/geronimo-iia/ring-rs"
-documentation = "https://docs.rs/ring-rs"
+repository = "https://github.com/geronimo-iia/spsc-ring"
+homepage = "https://github.com/geronimo-iia/spsc-ring"
+documentation = "https://docs.rs/spsc-ring"
 keywords = ["spsc", "ring-buffer", "lock-free", "concurrency", "queue"]
 categories = ["concurrency", "data-structures", "no-std"]
 
