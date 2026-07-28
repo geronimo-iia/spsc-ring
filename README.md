@@ -85,7 +85,7 @@ assert_eq!(received, (0..100).collect::<Vec<_>>());
 
 ### Bulk throughput with `push_slice` / `pop_into_slice`
 
-For `T: Copy`, slice ops amortise the per-item overhead and yield ~1.6× throughput at chunk≥32.
+For `T: Copy`, slice ops amortise the per-item overhead and yield ~1.9× throughput at chunk≥8.
 
 ```rust
 use spsc_ring::ring;
