@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SPSC contract enforced at compile time: each half is `Send` but not `Clone`
 - Criterion benchmark: 1M events SPSC throughput
 - 9 unit tests covering push/pop, fullness, emptiness, FIFO order, wrap-around, concurrent SPSC, panics
+- `Producer::push_slice(&[T]) -> usize` — bulk push, requires `T: Copy`
+- `Consumer::pop_into_slice(&mut [T]) -> usize` — bulk drain, requires `T: Copy`
 
 ### Changed
 
