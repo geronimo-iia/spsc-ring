@@ -154,6 +154,22 @@ loop {
 | `Producer::push_slice(&[T])`         | Push items from slice until full or disconnected. Returns count pushed. Requires `T: Copy`.                         |
 | `Consumer::pop_into_slice(&mut [T])` | Pop items into slice until empty, full, or disconnected. Returns count popped. Requires `T: Copy`.                  |
 
+## Examples
+
+| File | Demonstrates |
+|------|-------------|
+| [`examples/basic.rs`](examples/basic.rs) | `try_push` / `try_pop` single-item loop |
+| [`examples/bulk.rs`](examples/bulk.rs) | `push_slice` / `pop_into_slice` batch throughput |
+| [`examples/wait_strategy.rs`](examples/wait_strategy.rs) | blocking `push` / `pop` with `WaitStrategy` |
+| [`examples/disconnect.rs`](examples/disconnect.rs) | producer drops early; consumer drains then exits on disconnect |
+
+```bash
+cargo run --example basic
+cargo run --example bulk
+cargo run --example wait_strategy
+cargo run --example disconnect
+```
+
 ## MSRV
 
 Rust 1.95 (stable). No nightly required.
