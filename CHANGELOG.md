@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `WaitStrategy` enum — `SpinLoop`, `Yield`, `Sleep(Duration)` — controls blocking behavior
+- `Producer::push(value, &WaitStrategy)` — blocking push; spins/yields/sleeps until slot free
+- `Consumer::pop(&WaitStrategy)` — blocking pop; spins/yields/sleeps until value available
+- `try_push`/`try_pop` unchanged — no breaking changes
+
+## [0.1.0]
+
+### Added
+
 - `ring<T>(capacity)` — create SPSC ring buffer; returns `(Producer<T>, Consumer<T>)` pair
 - `Producer<T>` — write half; `try_push(T) -> Result<(), T>`; `len`, `is_empty`, `is_full`, `capacity`
 - `Consumer<T>` — read half; `try_pop() -> Option<T>`; `len`, `is_empty`, `capacity`
