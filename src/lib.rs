@@ -259,7 +259,37 @@ impl<T> Producer<T> {
         Ok(())
     }
 
-    /// Approximate number of items in the buffer.
+    /// Approximate number of items currently in the buffer.
+    ///
+    /// # Why approximate
+    ///
+    /// Reads both `tail` (owned by the producer) and `head` (owned by the
+    /// consumer) with [`Ordering::Relaxed`]. The returned value can differ
+    /// from the true count in either direction: a concurrent pop can lower it,
+    /// and a stale Relaxed read of `head` can raise it. The result is a
+    /// best-effort snapshot, not a linearizable read.
+    ///
+    /// # Safe uses
+    ///
+    /// - Capacity planning and monitoring dashboards.
+    /// - Backpressure hints (e.g., slow down if `len() > threshold`).
+    ///
+    /// # Must NOT be used for
+    ///
+    /// - Deciding whether `try_push` will succeed — use the `Err` return value
+    ///   of `try_push` instead.
+    /// - Any correctness decision that requires an exact count.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use spsc_ring::ring;
+    /// let (tx, _rx) = ring::<u32>(16).unwrap();
+    /// tx.try_push(1).unwrap();
+    /// tx.try_push(2).unwrap();
+    /// // len() is a hint — do not assert == 2 across threads.
+    /// let _ = tx.len(); // safe: backpressure hint only
+    /// ```
     #[must_use]
     pub fn len(&self) -> usize {
         let rb = &*self.inner;
@@ -365,7 +395,38 @@ impl<T> Consumer<T> {
         value.ok_or(TryRecvError::Empty)
     }
 
-    /// Approximate number of items in the buffer.
+    /// Approximate number of items currently in the buffer.
+    ///
+    /// # Why approximate
+    ///
+    /// Reads both `tail` (owned by the producer) and `head` (owned by the
+    /// consumer) with [`Ordering::Relaxed`]. The producer may have advanced
+    /// `tail` between the two loads, so the returned value can be *lower* than
+    /// the true count. The result is a best-effort snapshot, not a
+    /// linearizable read.
+    ///
+    /// # Safe uses
+    ///
+    /// - Capacity planning and monitoring dashboards.
+    /// - Backpressure hints (e.g., slow down if `len() < threshold` before
+    ///   sleeping).
+    ///
+    /// # Must NOT be used for
+    ///
+    /// - Deciding whether `try_pop` will return `Ok` — use the `Err` return
+    ///   value of `try_pop` instead.
+    /// - Any correctness decision that requires an exact count.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use spsc_ring::ring;
+    /// let (tx, rx) = ring::<u32>(16).unwrap();
+    /// tx.try_push(1).unwrap();
+    /// tx.try_push(2).unwrap();
+    /// // len() is a hint — do not assert == 2 across threads.
+    /// let _ = rx.len(); // safe: backpressure hint only
+    /// ```
     #[must_use]
     pub fn len(&self) -> usize {
         let rb = &*self.inner;

@@ -80,7 +80,7 @@ assert_eq!(received, (0..100).collect::<Vec<_>>());
 | `Consumer::pop(&WaitStrategy)`       | Blocking pop. Returns `Err(RecvError)` if producer dropped and buffer empty.                                         |
 | `Producer::is_disconnected()`        | Returns `true` if consumer has been dropped.                                                                         |
 | `Consumer::is_disconnected()`        | Returns `true` if producer has been dropped.                                                                         |
-| `{Producer,Consumer}::len()`         | Approximate item count.                                                                                              |
+| `{Producer,Consumer}::len()`         | Approximate item count (Relaxed snapshot — use for hints only, not correctness).                                     |
 | `{Producer,Consumer}::capacity()`    | Buffer capacity.                                                                                                     |
 | `Producer::is_empty()`               | Returns `true` if buffer appears empty.                                                                              |
 | `Producer::is_full()`                | Returns `true` if buffer appears full.                                                                               |
