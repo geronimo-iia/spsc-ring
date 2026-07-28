@@ -47,7 +47,83 @@
 
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// Error returned by [`Consumer::pop`] when the producer has been dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecvError;
+
+impl std::fmt::Display for RecvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "producer disconnected")
+    }
+}
+
+impl std::error::Error for RecvError {}
+
+/// Error returned by [`Producer::push`] when the consumer has been dropped.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SendError<T>(pub T);
+
+impl<T: std::fmt::Debug> std::fmt::Display for SendError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "consumer disconnected; value: {:?}", self.0)
+    }
+}
+
+impl<T: std::fmt::Debug + 'static> std::error::Error for SendError<T> {}
+
+/// Error returned by [`Consumer::try_pop`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryRecvError {
+    /// Buffer is empty; try again later.
+    Empty,
+    /// Producer has been dropped; no more items will arrive.
+    Disconnected,
+}
+
+impl std::fmt::Display for TryRecvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TryRecvError::Empty => write!(f, "buffer empty"),
+            TryRecvError::Disconnected => write!(f, "producer disconnected"),
+        }
+    }
+}
+
+impl std::error::Error for TryRecvError {}
+
+/// Error returned by [`Producer::try_push`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum TrySendError<T> {
+    /// Buffer is full; value returned unchanged.
+    Full(T),
+    /// Consumer has been dropped; value returned unchanged.
+    Disconnected(T),
+}
+
+impl<T: std::fmt::Debug> std::fmt::Display for TrySendError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrySendError::Full(v) => write!(f, "buffer full; value: {:?}", v),
+            TrySendError::Disconnected(v) => write!(f, "consumer disconnected; value: {:?}", v),
+        }
+    }
+}
+
+impl<T: std::fmt::Debug + 'static> std::error::Error for TrySendError<T> {}
+
+/// Error returned by [`ring`] when capacity is zero or not a power of two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidCapacity(pub usize);
+
+impl std::fmt::Display for InvalidCapacity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "capacity {} is not a non-zero power of two", self.0)
+    }
+}
+
+impl std::error::Error for InvalidCapacity {}
 
 /// Strategy used by blocking [`Producer::push`] and [`Consumer::pop`] while waiting.
 #[derive(Debug, Clone, Copy)]
@@ -486,6 +562,16 @@ mod tests {
         let received = consumer.join().unwrap();
         let expected: Vec<u32> = (0..1024).collect();
         assert_eq!(received, expected);
+    }
+
+    #[test]
+    fn error_types_exist() {
+        let _: RecvError = RecvError;
+        let _: SendError<u32> = SendError(42);
+        let _: TryRecvError = TryRecvError::Empty;
+        let _: TryRecvError = TryRecvError::Disconnected;
+        let _: TrySendError<u32> = TrySendError::Full(1);
+        let _: TrySendError<u32> = TrySendError::Disconnected(2);
     }
 
     #[test]
