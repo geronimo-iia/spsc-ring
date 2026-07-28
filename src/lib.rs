@@ -756,8 +756,8 @@ mod tests {
 
 #[cfg(loom)]
 mod loom_tests {
-    use loom::thread;
     use super::ring;
+    use loom::thread;
 
     /// Loom explores all thread interleavings of a single push followed by a
     /// single pop on a 2-slot buffer.  A 2-slot buffer is the smallest
@@ -773,9 +773,7 @@ mod loom_tests {
                 tx.try_push(42usize).ok();
             });
 
-            let consumer = thread::spawn(move || {
-                rx.try_pop()
-            });
+            let consumer = thread::spawn(move || rx.try_pop());
 
             producer.join().unwrap();
             let _result = consumer.join().unwrap();
