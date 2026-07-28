@@ -8,35 +8,44 @@ Single crate — no workspace. All implementation in `src/lib.rs`.
 
 ```
 src/
-  lib.rs          # everything: WaitStrategy, Producer<T>, Consumer<T>, ring(), 9 unit tests
+  lib.rs          # everything: WaitStrategy, Producer<T>, Consumer<T>, ring(), 41 unit tests
 benches/
   throughput.rs   # Criterion: 1M event SPSC throughput
+examples/
+  basic.rs        # single-item try_push/try_pop
+  bulk.rs         # push_slice/pop_into_slice
+  wait_strategy.rs
 docs/
-  superpowers/
-    plans/        # implementation plans
+  backlog.md      # known gaps and future work
+.claude/
+  plans/          # implementation plans (YYYY-MM-DD-<feature-name>.md)
 ```
 
 ## Public API
 
 ```rust
 // Create buffer (capacity must be power of 2)
-pub fn ring<T: Send>(capacity: usize) -> (Producer<T>, Consumer<T>)
+pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), InvalidCapacity>
 
-pub struct Producer<T> {
-    pub fn try_push(&self, value: T) -> Result<(), T>     // non-blocking
-    pub fn push(&self, value: T, strategy: &WaitStrategy) // blocking (0.2.0+)
+pub struct Producer<T> {  // Send, !Sync, !Clone
+    pub fn try_push(&self, value: T) -> Result<(), TrySendError<T>>
+    pub fn push(&self, value: T, strategy: &WaitStrategy) -> Result<(), SendError<T>>
+    pub fn push_slice(&self, src: &[T]) -> usize          // T: Copy
     pub fn len(&self) -> usize
     pub fn is_empty(&self) -> bool
     pub fn is_full(&self) -> bool
     pub fn capacity(&self) -> usize
+    pub fn is_disconnected(&self) -> bool
 }
 
-pub struct Consumer<T> {
-    pub fn try_pop(&self) -> Option<T>                    // non-blocking
-    pub fn pop(&self, strategy: &WaitStrategy) -> T       // blocking (0.2.0+)
+pub struct Consumer<T> {  // Send, !Sync, !Clone
+    pub fn try_pop(&self) -> Result<T, TryRecvError>
+    pub fn pop(&self, strategy: &WaitStrategy) -> Result<T, RecvError>
+    pub fn pop_into_slice(&self, dst: &mut [T]) -> usize  // T: Copy
     pub fn len(&self) -> usize
     pub fn is_empty(&self) -> bool
     pub fn capacity(&self) -> usize
+    pub fn is_disconnected(&self) -> bool
 }
 
 pub enum WaitStrategy {
@@ -49,9 +58,12 @@ pub enum WaitStrategy {
 ## Design invariants — do not change without understanding these
 
 - **Sequence-number protocol**: slot carries a stamp written by producer *after* storing the value; consumer checks *before* reading. Acquire/Release only — no SeqCst.
-- **Cache-line padding**: `PaddedAtomicUsize` pads producer and consumer cursors to 64 bytes. Prevents false sharing. Do not remove the `_pad` field.
-- **SPSC contract**: `ring()` returns one `Producer` and one `Consumer`. Each is `Send` but not `Clone`. The type system enforces single-producer/single-consumer — never add `Clone`.
-- **Power-of-two capacity**: mask trick (`tail & rb.mask`) requires power of two. The panic in `ring()` is intentional and load-bearing.
+- **`MaybeUninit<T>` slots**: `Slot<T>` uses `UnsafeCell<MaybeUninit<T>>`. The sequence number encodes occupancy — no `Option` discriminant write on pop. `assume_init_read` on pop, `assume_init_drop` in `RingBuffer::drop`.
+- **`#[repr(align(32))]` on `Slot<T>`**: 2 slots per cache line. Halves false-sharing vs unpadded 16B slots while keeping 1024-slot ring (32KB) within L1D. Do not remove.
+- **Cache-line padding**: `PaddedAtomicUsize` pads producer and consumer cursors to 64 bytes. Prevents false sharing on head/tail. Do not remove the `_pad` field.
+- **`closed` field placement**: `AtomicBool closed` sits before `head`/`tail` in `RingBuffer`, grouped with write-once `mask`. Keeps hot head/tail cache lines uncontaminated by the disconnect write.
+- **SPSC contract**: `ring()` returns one `Producer` and one `Consumer`. Each is `Send` but not `Clone` and not `Sync` (`PhantomData<Cell<()>>`). Never add `Clone` or remove the `PhantomData`.
+- **Power-of-two capacity**: mask trick (`tail & rb.mask`) requires power of two. The `Err(InvalidCapacity)` in `ring()` is intentional and load-bearing.
 - **Unbounded sequence counters**: head/tail never wrap to zero; only slot index uses modulo. This is correct — do not add manual wrapping.
 
 ## Toolchain
@@ -63,7 +75,7 @@ pub enum WaitStrategy {
 ## Commands
 
 ```bash
-cargo test                        # 9 unit tests (+ doc test)
+cargo test                        # 41 unit tests (+ doc tests)
 cargo test <name>                 # single test by name
 cargo fmt --all -- --check        # must pass clean
 cargo clippy --all-targets -- -D warnings   # must pass clean
@@ -77,7 +89,7 @@ cargo publish --dry-run           # verify crates.io package
 
 When asked to write a plan:
 1. Read `src/lib.rs` — derive exact signatures and test patterns from the live code
-2. Save to `docs/superpowers/plans/YYYY-MM-DD-<feature-name>.md`
+2. Save to `.claude/plans/YYYY-MM-DD-<feature-name>.md`
 3. Self-review: every requirement has a task; every task shows exact code, not placeholders; tasks compile independently in sequence
 
 ## Executing plans
