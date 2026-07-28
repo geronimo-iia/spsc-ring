@@ -12,11 +12,6 @@
 //! The SPSC contract is enforced at compile time: [`ring`] returns a
 //! `(Producer<T>, Consumer<T>)` pair. Each half is `Send` but not `Clone`.
 //!
-//! ## Performance
-//!
-//! 118M events/sec, 8ns/event (measured on PoC-E, 1024-slot buffer).
-//! Target: >100M events/sec, <100ns/event.
-//!
 //! ## Example
 //!
 //! ```
@@ -51,7 +46,9 @@
 #![deny(missing_docs)]
 #![allow(unsafe_code)]
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -143,6 +140,7 @@ pub enum WaitStrategy {
 }
 
 impl WaitStrategy {
+    #[inline]
     fn wait(&self) {
         match self {
             WaitStrategy::SpinLoop => std::hint::spin_loop(),
@@ -169,9 +167,12 @@ impl PaddedAtomicUsize {
     }
 }
 
+// 32-byte alignment: 2 slots per cache line. Halves false-sharing vs unpadded 16B slots
+// while keeping 1024-slot ring (32KB) within typical L1D cache.
+#[repr(align(32))]
 struct Slot<T> {
     sequence: AtomicUsize,
-    value: UnsafeCell<Option<T>>,
+    value: UnsafeCell<MaybeUninit<T>>,
 }
 
 struct RingBuffer<T> {
@@ -186,6 +187,22 @@ struct RingBuffer<T> {
 // and one Consumer exist. The sequence-number protocol ensures no data race.
 unsafe impl<T: Send> Send for RingBuffer<T> {}
 unsafe impl<T: Send> Sync for RingBuffer<T> {}
+
+impl<T> Drop for RingBuffer<T> {
+    fn drop(&mut self) {
+        // Drain any items remaining in the buffer so their destructors run.
+        // head and tail are exclusively owned at this point (both Arc halves dropped).
+        let mut head = self.head.value.load(Ordering::Relaxed);
+        let tail = self.tail.value.load(Ordering::Relaxed);
+        while head != tail {
+            let slot = &self.slots[head & self.mask];
+            // SAFETY: head != tail means producer wrote this slot and consumer
+            // has not yet read it. No other thread is alive (both halves dropped).
+            unsafe { (*slot.value.get()).assume_init_drop() };
+            head = head.wrapping_add(1);
+        }
+    }
+}
 
 /// Create an SPSC ring buffer with the given capacity (must be a power of 2).
 ///
@@ -202,7 +219,7 @@ pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), Inva
     let slots: Vec<Slot<T>> = (0..capacity)
         .map(|i| Slot {
             sequence: AtomicUsize::new(i),
-            value: UnsafeCell::new(None),
+            value: UnsafeCell::new(MaybeUninit::uninit()),
         })
         .collect();
 
@@ -217,19 +234,25 @@ pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), Inva
     Ok((
         Producer {
             inner: Arc::clone(&inner),
+            _not_sync: PhantomData,
         },
-        Consumer { inner },
+        Consumer {
+            inner,
+            _not_sync: PhantomData,
+        },
     ))
 }
 
 /// Write half of the SPSC ring. Not `Clone` — only one producer exists.
 pub struct Producer<T> {
     inner: Arc<RingBuffer<T>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 /// Read half of the SPSC ring. Not `Clone` — only one consumer exists.
 pub struct Consumer<T> {
     inner: Arc<RingBuffer<T>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<T> Producer<T> {
@@ -245,6 +268,7 @@ impl<T> Producer<T> {
     ///
     /// - [`TrySendError::Full`] — buffer is full; value is returned unchanged.
     /// - [`TrySendError::Disconnected`] — consumer has been dropped; value is returned unchanged.
+    #[inline]
     pub fn try_push(&self, value: T) -> Result<(), TrySendError<T>> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(TrySendError::Disconnected(value));
@@ -258,8 +282,8 @@ impl<T> Producer<T> {
             return Err(TrySendError::Full(value));
         }
 
-        // SAFETY: Sole producer. Sequence check guarantees consumer is done with this slot.
-        unsafe { *slot.value.get() = Some(value) };
+        // SAFETY: Sole producer. Sequence check guarantees consumer finished reading this slot.
+        unsafe { (*slot.value.get()).write(value) };
         slot.sequence.store(tail + 1, Ordering::Release);
         rb.tail.value.store(tail + 1, Ordering::Relaxed);
         Ok(())
@@ -350,6 +374,11 @@ impl<T> Drop for Producer<T> {
 
 impl<T: Copy> Producer<T> {
     /// Push as many items from `src` as fit. Returns count pushed.
+    ///
+    /// Stops early if the buffer is full or the consumer has been dropped.
+    /// If `count < src.len()`, call [`Producer::is_disconnected`] to distinguish
+    /// the two cases — a full buffer is retriable, a disconnect is permanent.
+    #[inline]
     pub fn push_slice(&self, src: &[T]) -> usize {
         let mut count = 0;
         for &item in src {
@@ -381,6 +410,7 @@ impl<T> Consumer<T> {
     ///
     /// - [`TryRecvError::Empty`] — buffer is empty; try again later.
     /// - [`TryRecvError::Disconnected`] — producer has been dropped and buffer is empty.
+    #[inline]
     pub fn try_pop(&self) -> Result<T, TryRecvError> {
         let rb = &*self.inner;
         let head = rb.head.value.load(Ordering::Relaxed);
@@ -395,10 +425,12 @@ impl<T> Consumer<T> {
         }
 
         // SAFETY: Sole consumer. Sequence check guarantees producer finished writing.
-        let value = unsafe { (*slot.value.get()).take() };
+        // assume_init_read performs a bitwise copy — safe because the producer wrote
+        // a valid T and we release the slot immediately after, ensuring no double-read.
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
         slot.sequence.store(head + rb.mask + 1, Ordering::Release);
         rb.head.value.store(head + 1, Ordering::Relaxed);
-        value.ok_or(TryRecvError::Empty)
+        Ok(value)
     }
 
     /// Approximate number of items currently in the buffer.
@@ -471,6 +503,11 @@ impl<T> Consumer<T> {
 
 impl<T: Copy> Consumer<T> {
     /// Pop as many items into `dst` as are available. Returns count popped.
+    ///
+    /// Stops early if the buffer is empty or the producer has been dropped.
+    /// If `count < dst.len()`, call [`Consumer::is_disconnected`] to distinguish
+    /// the two cases — an empty buffer may refill, a disconnect will not.
+    #[inline]
     pub fn pop_into_slice(&self, dst: &mut [T]) -> usize {
         let mut count = 0;
         for slot in dst.iter_mut() {
@@ -746,6 +783,19 @@ mod tests {
     }
 
     #[test]
+    fn try_pop_drains_buffered_items_after_producer_drop() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        tx.try_push(1).unwrap();
+        tx.try_push(2).unwrap();
+        tx.try_push(3).unwrap();
+        drop(tx);
+        assert_eq!(rx.try_pop(), Ok(1));
+        assert_eq!(rx.try_pop(), Ok(2));
+        assert_eq!(rx.try_pop(), Ok(3));
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Disconnected));
+    }
+
+    #[test]
     fn error_types_exist() {
         let _: RecvError = RecvError;
         let _: SendError<u32> = SendError(42);
@@ -818,6 +868,61 @@ mod tests {
                 .unwrap(),
             99u64
         );
+    }
+
+    #[test]
+    fn wait_strategy_sleep_exercises_spin_on_full_buffer() {
+        use std::time::Duration;
+        let (tx, rx) = ring(2).unwrap();
+        tx.try_push(1u32).unwrap();
+        tx.try_push(2u32).unwrap();
+
+        // Consumer drains after a delay — forces push to spin-sleep before slot is free.
+        let consumer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            rx.try_pop().unwrap();
+            rx
+        });
+
+        tx.push(3u32, &WaitStrategy::Sleep(Duration::from_millis(1)))
+            .unwrap();
+        let rx = consumer.join().unwrap();
+        assert_eq!(rx.try_pop(), Ok(2));
+        assert_eq!(rx.try_pop(), Ok(3));
+    }
+
+    #[test]
+    fn push_slice_stops_on_disconnect() {
+        let (tx, rx) = ring::<u32>(8).unwrap();
+        drop(rx);
+        // Buffer is empty and consumer dropped — first try_push returns Disconnected.
+        let pushed = tx.push_slice(&[1, 2, 3, 4]);
+        assert_eq!(pushed, 0);
+        assert!(tx.is_disconnected());
+    }
+
+    #[test]
+    fn pop_into_slice_stops_on_disconnect() {
+        let (tx, rx) = ring::<u32>(8).unwrap();
+        tx.try_push(10).unwrap();
+        tx.try_push(20).unwrap();
+        drop(tx);
+        let mut dst = [0u32; 4];
+        // Drains buffered items, then stops at Disconnected.
+        let popped = rx.pop_into_slice(&mut dst);
+        assert_eq!(popped, 2);
+        assert_eq!(dst[0], 10);
+        assert_eq!(dst[1], 20);
+    }
+
+    #[test]
+    fn both_halves_drop_simultaneously() {
+        // Dropping both ends from separate threads must not double-free or panic.
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        let t1 = std::thread::spawn(move || drop(tx));
+        let t2 = std::thread::spawn(move || drop(rx));
+        t1.join().unwrap();
+        t2.join().unwrap();
     }
 }
 
