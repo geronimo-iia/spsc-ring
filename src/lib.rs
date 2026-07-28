@@ -49,6 +49,27 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Strategy used by blocking [`Producer::push`] and [`Consumer::pop`] while waiting.
+#[derive(Debug, Clone)]
+pub enum WaitStrategy {
+    /// Spin with [`std::hint::spin_loop`]. Lowest latency, highest CPU burn.
+    SpinLoop,
+    /// Yield the thread with [`std::thread::yield_now`]. Balanced.
+    Yield,
+    /// Sleep for a fixed duration. Lowest CPU burn, highest latency.
+    Sleep(std::time::Duration),
+}
+
+impl WaitStrategy {
+    fn wait(&self) {
+        match self {
+            WaitStrategy::SpinLoop => std::hint::spin_loop(),
+            WaitStrategy::Yield => std::thread::yield_now(),
+            WaitStrategy::Sleep(d) => std::thread::sleep(*d),
+        }
+    }
+}
+
 const CACHE_LINE: usize = 64;
 
 #[repr(C)]
@@ -178,6 +199,20 @@ impl<T> Producer<T> {
     pub fn capacity(&self) -> usize {
         self.inner.mask + 1
     }
+
+    /// Push a value, blocking with `strategy` until a slot is free.
+    pub fn push(&self, value: T, strategy: &WaitStrategy) {
+        let mut v = value;
+        loop {
+            match self.try_push(v) {
+                Ok(()) => return,
+                Err(returned) => {
+                    strategy.wait();
+                    v = returned;
+                }
+            }
+        }
+    }
 }
 
 impl<T: Copy> Producer<T> {
@@ -233,6 +268,16 @@ impl<T> Consumer<T> {
     #[must_use]
     pub fn capacity(&self) -> usize {
         self.inner.mask + 1
+    }
+
+    /// Pop a value, blocking with `strategy` until one is available.
+    pub fn pop(&self, strategy: &WaitStrategy) -> T {
+        loop {
+            if let Some(v) = self.try_pop() {
+                return v;
+            }
+            strategy.wait();
+        }
     }
 }
 
@@ -454,5 +499,48 @@ mod tests {
         assert_eq!(rx.try_pop(), Some(3));
         assert_eq!(rx.try_pop(), Some(4));
         assert_eq!(rx.try_pop(), None);
+    }
+
+    #[test]
+    fn wait_strategy_spin_loop_waits_until_slot_free() {
+        let (tx, rx) = ring(2);
+        tx.try_push(1).unwrap();
+        tx.try_push(2).unwrap();
+
+        let consumer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            rx.try_pop().unwrap();
+            rx
+        });
+
+        tx.push(3, &WaitStrategy::SpinLoop);
+        let rx = consumer.join().unwrap();
+        assert_eq!(rx.try_pop(), Some(2));
+        assert_eq!(rx.try_pop(), Some(3));
+    }
+
+    #[test]
+    fn wait_strategy_yield_waits_until_value_available() {
+        let (tx, rx) = ring(4);
+
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            tx.try_push(42).unwrap();
+        });
+
+        let value = rx.pop(&WaitStrategy::Yield);
+        assert_eq!(value, 42u32);
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn wait_strategy_sleep_push_pop() {
+        use std::time::Duration;
+        let (tx, rx) = ring(4);
+        tx.push(99u64, &WaitStrategy::Sleep(Duration::from_millis(1)));
+        assert_eq!(
+            rx.pop(&WaitStrategy::Sleep(Duration::from_millis(1))),
+            99u64
+        );
     }
 }
