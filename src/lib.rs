@@ -1,4 +1,4 @@
-//! # ring-rs
+//! # spsc-ring
 //!
 //! Lock-free SPSC ring buffer.
 //!
@@ -20,7 +20,7 @@
 //! ## Example
 //!
 //! ```
-//! use ring_rs::ring;
+//! use spsc_ring::ring;
 //! use std::thread;
 //!
 //! let (tx, rx) = ring::<u64>(64);

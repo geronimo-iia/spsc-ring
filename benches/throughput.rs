@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use ring_rs::ring;
+use spsc_ring::ring;
 use std::thread;
 
 fn throughput_1m(c: &mut Criterion) {
