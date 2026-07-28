@@ -171,6 +171,9 @@ impl PaddedAtomicUsize {
     }
 }
 
+// 32-byte alignment: 2 slots per cache line. Halves false-sharing vs unpadded 16B slots
+// while keeping 1024-slot ring (32KB) within typical L1D cache.
+#[repr(align(32))]
 struct Slot<T> {
     sequence: AtomicUsize,
     value: UnsafeCell<MaybeUninit<T>>,
