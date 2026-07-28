@@ -924,6 +924,16 @@ mod tests {
         t1.join().unwrap();
         t2.join().unwrap();
     }
+
+    #[test]
+    fn ring_capacity_one_wraps_correctly() {
+        let (tx, rx) = ring::<u32>(1).unwrap();
+        for i in 0..4u32 {
+            tx.try_push(i).unwrap();
+            assert_eq!(rx.try_pop(), Ok(i));
+        }
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Empty));
+    }
 }
 
 #[cfg(loom)]
