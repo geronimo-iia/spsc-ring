@@ -2,8 +2,9 @@
 
 ## Prerequisites
 
-- Rust stable (MSRV 1.95). No nightly required.
+- Rust stable (MSRV 1.95) for normal development.
 - `cargo` only — no build scripts, no external tools required for basic dev.
+- Optional: Rust nightly + Miri (`rustup component add miri --toolchain nightly`) for memory safety checks.
 - Optional: `cargo-instruments` (macOS) for profiling. Install: `cargo install cargo-instruments`.
 
 ## Building
@@ -19,6 +20,24 @@ cargo test
 ```
 
 All tests must pass before a PR.
+
+### Loom concurrency tests
+
+Loom explores all thread interleavings to check for data races. Requires stable (1.95) but must be compiled with `--cfg loom`:
+
+```bash
+RUSTFLAGS="--cfg loom" cargo test loom_tests
+```
+
+These tests are slow by design — loom's state space is exponential. Run them when touching the unsafe core or the sequence-number protocol.
+
+### Miri memory safety checks
+
+Miri detects undefined behaviour, use-after-free, and invalid memory access. Requires nightly:
+
+```bash
+cargo miri test
+```
 
 ## Formatting and linting
 
