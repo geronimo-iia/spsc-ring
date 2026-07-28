@@ -380,6 +380,15 @@ impl<T> Consumer<T> {
 
         if seq != head + 1 {
             if rb.closed.load(Ordering::Acquire) {
+                // Re-check seq: the Acquire on closed synchronizes with the producer's
+                // Release writes, making any last push visible. Without this re-check,
+                // items written just before the producer dropped could be silently lost.
+                if slot.sequence.load(Ordering::Acquire) == head + 1 {
+                    let value = unsafe { (*slot.value.get()).assume_init_read() };
+                    slot.sequence.store(head + rb.mask + 1, Ordering::Release);
+                    rb.head.value.store(head + 1, Ordering::Relaxed);
+                    return Ok(value);
+                }
                 return Err(TryRecvError::Disconnected);
             }
             return Err(TryRecvError::Empty);
@@ -826,6 +835,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // sleep-based timing; Miri doesn't simulate real time
     fn wait_strategy_spin_loop_waits_until_slot_free() {
         let (tx, rx) = ring(2).unwrap();
         tx.try_push(1).unwrap();
@@ -844,6 +854,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // sleep-based timing; Miri doesn't simulate real time
     fn wait_strategy_yield_waits_until_value_available() {
         let (tx, rx) = ring(4).unwrap();
 
@@ -871,6 +882,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // sleep-based timing; Miri doesn't simulate real time
     fn wait_strategy_sleep_exercises_spin_on_full_buffer() {
         use std::time::Duration;
         let (tx, rx) = ring(2).unwrap();
