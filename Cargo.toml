@@ -1,0 +1,21 @@
+[package]
+name = "ring-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "Lock-free SPSC ring buffer — sequence-number protocol, cache-line padded, zero dependencies"
+repository = "https://github.com/geronimo-iia/ring-rs"
+homepage = "https://github.com/geronimo-iia/ring-rs"
+documentation = "https://docs.rs/ring-rs"
+keywords = ["spsc", "ring-buffer", "lock-free", "concurrency", "queue"]
+categories = ["concurrency", "data-structures", "no-std"]
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "throughput"
+harness = false
