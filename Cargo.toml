@@ -9,7 +9,7 @@ repository = "https://github.com/geronimo-iia/spsc-ring"
 homepage = "https://github.com/geronimo-iia/spsc-ring"
 documentation = "https://docs.rs/spsc-ring"
 keywords = ["spsc", "ring-buffer", "lock-free", "concurrency", "queue"]
-categories = ["concurrency", "data-structures", "no-std"]
+categories = ["concurrency", "data-structures"]
 
 [dependencies]
 
