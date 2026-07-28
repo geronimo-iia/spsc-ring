@@ -8,63 +8,38 @@ Single crate — no workspace. All implementation in `src/lib.rs`.
 
 ```
 src/
-  lib.rs          # everything: WaitStrategy, Producer<T>, Consumer<T>, ring(), 41 unit tests
+  lib.rs              # everything: internals, public API, unit tests, loom tests
 benches/
-  throughput.rs   # Criterion: 1M event SPSC throughput
+  throughput.rs       # Criterion: 1M event throughput, slice chunk sizes
 examples/
-  basic.rs        # single-item try_push/try_pop
-  bulk.rs         # push_slice/pop_into_slice
-  wait_strategy.rs
+  basic.rs            # try_push / try_pop single-item loop
+  bulk.rs             # push_slice / pop_into_slice batch throughput
+  wait_strategy.rs    # blocking push / pop with WaitStrategy
+  disconnect.rs       # producer drops early; consumer drains then exits
 docs/
-  backlog.md      # known gaps and future work
+  backlog.md          # known gaps and future work
 .claude/
-  plans/          # implementation plans (YYYY-MM-DD-<feature-name>.md)
+  plans/              # implementation plans (YYYY-MM-DD-<feature-name>.md)
 ```
 
 ## Public API
 
-```rust
-// Create buffer (capacity must be power of 2)
-pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), InvalidCapacity>
+Read `src/lib.rs` for authoritative signatures. Do not duplicate them here.
 
-pub struct Producer<T> {  // Send, !Sync, !Clone
-    pub fn try_push(&self, value: T) -> Result<(), TrySendError<T>>
-    pub fn push(&self, value: T, strategy: &WaitStrategy) -> Result<(), SendError<T>>
-    pub fn push_slice(&self, src: &[T]) -> usize          // T: Copy
-    pub fn len(&self) -> usize
-    pub fn is_empty(&self) -> bool
-    pub fn is_full(&self) -> bool
-    pub fn capacity(&self) -> usize
-    pub fn is_disconnected(&self) -> bool
-}
+Key entry point: `pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), InvalidCapacity>`
 
-pub struct Consumer<T> {  // Send, !Sync, !Clone
-    pub fn try_pop(&self) -> Result<T, TryRecvError>
-    pub fn pop(&self, strategy: &WaitStrategy) -> Result<T, RecvError>
-    pub fn pop_into_slice(&self, dst: &mut [T]) -> usize  // T: Copy
-    pub fn len(&self) -> usize
-    pub fn is_empty(&self) -> bool
-    pub fn capacity(&self) -> usize
-    pub fn is_disconnected(&self) -> bool
-}
-
-pub enum WaitStrategy {
-    SpinLoop,            // hint::spin_loop() — lowest latency, highest CPU
-    Yield,               // thread::yield_now() — balanced
-    Sleep(Duration),     // thread::sleep(d) — lowest CPU, highest latency
-}
-```
+Capacity must be a non-zero power of two. Returns one `Producer<T>` and one `Consumer<T>` — each `Send`, not `Clone`, not `Sync`.
 
 ## Design invariants — do not change without understanding these
 
-- **Sequence-number protocol**: slot carries a stamp written by producer *after* storing the value; consumer checks *before* reading. Acquire/Release only — no SeqCst.
-- **`MaybeUninit<T>` slots**: `Slot<T>` uses `UnsafeCell<MaybeUninit<T>>`. The sequence number encodes occupancy — no `Option` discriminant write on pop. `assume_init_read` on pop, `assume_init_drop` in `RingBuffer::drop`.
-- **`#[repr(align(32))]` on `Slot<T>`**: 2 slots per cache line. Halves false-sharing vs unpadded 16B slots while keeping 1024-slot ring (32KB) within L1D. Do not remove.
-- **Cache-line padding**: `PaddedAtomicUsize` pads producer and consumer cursors to 64 bytes. Prevents false sharing on head/tail. Do not remove the `_pad` field.
+- **Sequence-number protocol**: slot stamp written by producer *after* storing value; consumer checks *before* reading. `Acquire`/`Release` only — no `SeqCst`. Changing ordering breaks the protocol.
+- **`MaybeUninit<T>` slots**: `Slot<T>` uses `UnsafeCell<MaybeUninit<T>>`. Sequence number encodes occupancy — no `Option` discriminant write on pop. `assume_init_read` on pop, `assume_init_drop` in `RingBuffer::drop`. Never replace with `Option<T>`.
+- **`#[repr(align(32))]` on `Slot<T>`**: 2 slots per cache line. Halves false-sharing vs unpadded 16B slots while keeping 1024-slot ring (32KB) within L1D. `align(64)` blows past L1 and regresses ~37%. Do not remove or increase.
+- **Cache-line padding on cursors**: `PaddedAtomicUsize` pads `head` and `tail` to 64 bytes each. Prevents false sharing. Do not remove `_pad`.
 - **`closed` field placement**: `AtomicBool closed` sits before `head`/`tail` in `RingBuffer`, grouped with write-once `mask`. Keeps hot head/tail cache lines uncontaminated by the disconnect write.
-- **SPSC contract**: `ring()` returns one `Producer` and one `Consumer`. Each is `Send` but not `Clone` and not `Sync` (`PhantomData<Cell<()>>`). Never add `Clone` or remove the `PhantomData`.
-- **Power-of-two capacity**: mask trick (`tail & rb.mask`) requires power of two. The `Err(InvalidCapacity)` in `ring()` is intentional and load-bearing.
-- **Unbounded sequence counters**: head/tail never wrap to zero; only slot index uses modulo. This is correct — do not add manual wrapping.
+- **SPSC contract**: `PhantomData<Cell<()>>` on both halves enforces `!Sync`. Never add `Clone` or remove the `PhantomData`.
+- **Power-of-two capacity**: mask trick `tail & rb.mask` requires power of two. `Err(InvalidCapacity)` in `ring()` is load-bearing.
+- **Unbounded sequence counters**: `head`/`tail` never wrap to zero — only slot index uses modulo. Do not add manual wrapping.
 
 ## Toolchain
 
@@ -75,14 +50,19 @@ pub enum WaitStrategy {
 ## Commands
 
 ```bash
-cargo test                        # 41 unit tests (+ doc tests)
-cargo test <name>                 # single test by name
-cargo fmt --all -- --check        # must pass clean
-cargo clippy --all-targets -- -D warnings   # must pass clean
-cargo bench --no-run              # verify bench compiles
-cargo bench                       # run Criterion throughput (1M events)
-cargo doc --no-deps               # build rustdoc
-cargo publish --dry-run           # verify crates.io package
+cargo test                                          # unit tests + doc tests
+cargo test <name>                                   # single test by name
+RUSTFLAGS="--cfg loom" cargo test --test '*'        # loom model-checker (slow)
+cargo fmt --all -- --check                          # must pass clean
+cargo clippy --all-targets -- -D warnings           # must pass clean
+cargo run --example basic                           # smoke-test examples
+cargo run --example bulk
+cargo run --example wait_strategy
+cargo run --example disconnect
+cargo bench --no-run                                # verify bench compiles
+cargo bench                                         # run Criterion throughput
+cargo doc --no-deps                                 # build rustdoc
+cargo publish --dry-run                             # final gate before release
 ```
 
 ## Writing plans
