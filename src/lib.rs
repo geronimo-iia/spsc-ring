@@ -52,6 +52,94 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+const CACHE_LINE: usize = 64;
+
+#[repr(C)]
+struct PaddedAtomicUsize {
+    value: AtomicUsize,
+    _pad: [u8; CACHE_LINE - size_of::<AtomicUsize>()],
+}
+
+impl PaddedAtomicUsize {
+    const fn new(v: usize) -> Self {
+        Self {
+            value: AtomicUsize::new(v),
+            _pad: [0; CACHE_LINE - size_of::<AtomicUsize>()],
+        }
+    }
+}
+
+// 32-byte alignment: 2 slots per cache line. Halves false-sharing vs unpadded 16B slots
+// while keeping 1024-slot ring (32KB) within typical L1D cache.
+#[repr(align(32))]
+struct Slot<T> {
+    sequence: AtomicUsize,
+    value: UnsafeCell<MaybeUninit<T>>,
+}
+
+struct RingBuffer<T> {
+    slots: Box<[Slot<T>]>,
+    mask: usize,
+    closed: AtomicBool, // write-once at drop — grouped with write-once mask, away from hot head/tail lines
+    head: PaddedAtomicUsize,
+    tail: PaddedAtomicUsize,
+}
+
+// SAFETY: The SPSC contract is enforced by the type system — only one Producer
+// and one Consumer exist. The sequence-number protocol ensures no data race.
+unsafe impl<T: Send> Send for RingBuffer<T> {}
+unsafe impl<T: Send> Sync for RingBuffer<T> {}
+
+impl<T> Drop for RingBuffer<T> {
+    fn drop(&mut self) {
+        // Drain any items remaining in the buffer so their destructors run.
+        // head and tail are exclusively owned at this point (both Arc halves dropped).
+        let mut head = self.head.value.load(Ordering::Relaxed);
+        let tail = self.tail.value.load(Ordering::Relaxed);
+        while head != tail {
+            let slot = &self.slots[head & self.mask];
+            // SAFETY: head != tail means producer wrote this slot and consumer
+            // has not yet read it. No other thread is alive (both halves dropped).
+            unsafe { (*slot.value.get()).assume_init_drop() };
+            head = head.wrapping_add(1);
+        }
+    }
+}
+
+/// Strategy used by blocking [`Producer::push`] and [`Consumer::pop`] while waiting.
+#[derive(Debug, Clone, Copy)]
+pub enum WaitStrategy {
+    /// Spin with [`std::hint::spin_loop`]. Lowest latency, highest CPU burn.
+    SpinLoop,
+    /// Yield the thread with [`std::thread::yield_now`]. Balanced.
+    Yield,
+    /// Sleep for a fixed duration. Lowest CPU burn, highest latency.
+    Sleep(std::time::Duration),
+}
+
+impl WaitStrategy {
+    #[inline]
+    fn wait(&self) {
+        match self {
+            WaitStrategy::SpinLoop => std::hint::spin_loop(),
+            WaitStrategy::Yield => std::thread::yield_now(),
+            WaitStrategy::Sleep(d) => std::thread::sleep(*d),
+        }
+    }
+}
+
+/// Write half of the SPSC ring. Not `Clone` — only one producer exists.
+pub struct Producer<T> {
+    inner: Arc<RingBuffer<T>>,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+/// Read half of the SPSC ring. Not `Clone` — only one consumer exists.
+pub struct Consumer<T> {
+    inner: Arc<RingBuffer<T>>,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
 /// Error returned by [`Consumer::pop`] when the producer has been dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecvError;
@@ -127,133 +215,6 @@ impl std::fmt::Display for InvalidCapacity {
 }
 
 impl std::error::Error for InvalidCapacity {}
-
-/// Strategy used by blocking [`Producer::push`] and [`Consumer::pop`] while waiting.
-#[derive(Debug, Clone, Copy)]
-pub enum WaitStrategy {
-    /// Spin with [`std::hint::spin_loop`]. Lowest latency, highest CPU burn.
-    SpinLoop,
-    /// Yield the thread with [`std::thread::yield_now`]. Balanced.
-    Yield,
-    /// Sleep for a fixed duration. Lowest CPU burn, highest latency.
-    Sleep(std::time::Duration),
-}
-
-impl WaitStrategy {
-    #[inline]
-    fn wait(&self) {
-        match self {
-            WaitStrategy::SpinLoop => std::hint::spin_loop(),
-            WaitStrategy::Yield => std::thread::yield_now(),
-            WaitStrategy::Sleep(d) => std::thread::sleep(*d),
-        }
-    }
-}
-
-const CACHE_LINE: usize = 64;
-
-#[repr(C)]
-struct PaddedAtomicUsize {
-    value: AtomicUsize,
-    _pad: [u8; CACHE_LINE - size_of::<AtomicUsize>()],
-}
-
-impl PaddedAtomicUsize {
-    const fn new(v: usize) -> Self {
-        Self {
-            value: AtomicUsize::new(v),
-            _pad: [0; CACHE_LINE - size_of::<AtomicUsize>()],
-        }
-    }
-}
-
-// 32-byte alignment: 2 slots per cache line. Halves false-sharing vs unpadded 16B slots
-// while keeping 1024-slot ring (32KB) within typical L1D cache.
-#[repr(align(32))]
-struct Slot<T> {
-    sequence: AtomicUsize,
-    value: UnsafeCell<MaybeUninit<T>>,
-}
-
-struct RingBuffer<T> {
-    slots: Box<[Slot<T>]>,
-    mask: usize,
-    closed: AtomicBool, // write-once at drop — grouped with write-once mask, away from hot head/tail lines
-    head: PaddedAtomicUsize,
-    tail: PaddedAtomicUsize,
-}
-
-// SAFETY: The SPSC contract is enforced by the type system — only one Producer
-// and one Consumer exist. The sequence-number protocol ensures no data race.
-unsafe impl<T: Send> Send for RingBuffer<T> {}
-unsafe impl<T: Send> Sync for RingBuffer<T> {}
-
-impl<T> Drop for RingBuffer<T> {
-    fn drop(&mut self) {
-        // Drain any items remaining in the buffer so their destructors run.
-        // head and tail are exclusively owned at this point (both Arc halves dropped).
-        let mut head = self.head.value.load(Ordering::Relaxed);
-        let tail = self.tail.value.load(Ordering::Relaxed);
-        while head != tail {
-            let slot = &self.slots[head & self.mask];
-            // SAFETY: head != tail means producer wrote this slot and consumer
-            // has not yet read it. No other thread is alive (both halves dropped).
-            unsafe { (*slot.value.get()).assume_init_drop() };
-            head = head.wrapping_add(1);
-        }
-    }
-}
-
-/// Create an SPSC ring buffer with the given capacity (must be a power of 2).
-///
-/// Returns `(Producer, Consumer)` — send each half to its own thread.
-///
-/// # Errors
-///
-/// Returns [`InvalidCapacity`] if `capacity` is zero or not a power of two.
-pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), InvalidCapacity> {
-    if capacity == 0 || !capacity.is_power_of_two() {
-        return Err(InvalidCapacity(capacity));
-    }
-
-    let slots: Vec<Slot<T>> = (0..capacity)
-        .map(|i| Slot {
-            sequence: AtomicUsize::new(i),
-            value: UnsafeCell::new(MaybeUninit::uninit()),
-        })
-        .collect();
-
-    let inner = Arc::new(RingBuffer {
-        slots: slots.into_boxed_slice(),
-        mask: capacity - 1,
-        head: PaddedAtomicUsize::new(0),
-        tail: PaddedAtomicUsize::new(0),
-        closed: AtomicBool::new(false),
-    });
-
-    Ok((
-        Producer {
-            inner: Arc::clone(&inner),
-            _not_sync: PhantomData,
-        },
-        Consumer {
-            inner,
-            _not_sync: PhantomData,
-        },
-    ))
-}
-
-/// Write half of the SPSC ring. Not `Clone` — only one producer exists.
-pub struct Producer<T> {
-    inner: Arc<RingBuffer<T>>,
-    _not_sync: PhantomData<Cell<()>>,
-}
-
-/// Read half of the SPSC ring. Not `Clone` — only one consumer exists.
-pub struct Consumer<T> {
-    inner: Arc<RingBuffer<T>>,
-    _not_sync: PhantomData<Cell<()>>,
-}
 
 impl<T> Producer<T> {
     /// Returns `true` if the consumer has been dropped.
@@ -521,6 +482,45 @@ impl<T: Copy> Consumer<T> {
         }
         count
     }
+}
+
+/// Create an SPSC ring buffer with the given capacity (must be a power of 2).
+///
+/// Returns `(Producer, Consumer)` — send each half to its own thread.
+///
+/// # Errors
+///
+/// Returns [`InvalidCapacity`] if `capacity` is zero or not a power of two.
+pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), InvalidCapacity> {
+    if capacity == 0 || !capacity.is_power_of_two() {
+        return Err(InvalidCapacity(capacity));
+    }
+
+    let slots: Vec<Slot<T>> = (0..capacity)
+        .map(|i| Slot {
+            sequence: AtomicUsize::new(i),
+            value: UnsafeCell::new(MaybeUninit::uninit()),
+        })
+        .collect();
+
+    let inner = Arc::new(RingBuffer {
+        slots: slots.into_boxed_slice(),
+        mask: capacity - 1,
+        head: PaddedAtomicUsize::new(0),
+        tail: PaddedAtomicUsize::new(0),
+        closed: AtomicBool::new(false),
+    });
+
+    Ok((
+        Producer {
+            inner: Arc::clone(&inner),
+            _not_sync: PhantomData,
+        },
+        Consumer {
+            inner,
+            _not_sync: PhantomData,
+        },
+    ))
 }
 
 #[cfg(test)]
