@@ -753,3 +753,71 @@ mod tests {
         );
     }
 }
+
+#[cfg(loom)]
+mod loom_tests {
+    use loom::thread;
+    use super::ring;
+
+    /// Loom explores all thread interleavings of a single push followed by a
+    /// single pop on a 2-slot buffer.  A 2-slot buffer is the smallest
+    /// power-of-two that lets both slots be exercised.  Keep the iteration
+    /// count tiny — loom's state space is exponential in the number of
+    /// synchronisation operations.
+    #[test]
+    fn push_then_pop_all_interleavings() {
+        loom::model(|| {
+            let (tx, rx) = ring(2).expect("valid capacity");
+
+            let producer = thread::spawn(move || {
+                tx.try_push(42usize).ok();
+            });
+
+            let consumer = thread::spawn(move || {
+                rx.try_pop()
+            });
+
+            producer.join().unwrap();
+            let _result = consumer.join().unwrap();
+        });
+    }
+
+    /// Producer pushes two items; consumer pops both.  Verifies wrap-around
+    /// under loom's scheduler.
+    #[test]
+    fn push_pop_two_items() {
+        loom::model(|| {
+            let (tx, rx) = ring(2).expect("valid capacity");
+
+            let producer = thread::spawn(move || {
+                loop {
+                    match tx.try_push(1usize) {
+                        Ok(()) => break,
+                        Err(_) => loom::hint::spin_loop(),
+                    }
+                }
+                loop {
+                    match tx.try_push(2usize) {
+                        Ok(()) => break,
+                        Err(_) => loom::hint::spin_loop(),
+                    }
+                }
+            });
+
+            let consumer = thread::spawn(move || {
+                let mut got = Vec::new();
+                while got.len() < 2 {
+                    match rx.try_pop() {
+                        Ok(v) => got.push(v),
+                        Err(_) => loom::hint::spin_loop(),
+                    }
+                }
+                got
+            });
+
+            producer.join().unwrap();
+            let got = consumer.join().unwrap();
+            assert_eq!(got, vec![1, 2]);
+        });
+    }
+}

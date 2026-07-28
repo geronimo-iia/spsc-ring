@@ -61,3 +61,17 @@ jobs:
 
       - name: Miri
         run: cargo miri test
+
+  loom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Loom
+        run: RUSTFLAGS="--cfg loom" cargo test loom_tests
