@@ -13,7 +13,6 @@ fn run(name: &str, strategy: WaitStrategy) {
     });
 
     let consumer = thread::spawn(move || {
-        let strategy = WaitStrategy::SpinLoop;
         let mut last = 0u64;
         for _ in 0..count {
             last = rx.pop(&strategy);

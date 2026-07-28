@@ -50,7 +50,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Strategy used by blocking [`Producer::push`] and [`Consumer::pop`] while waiting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum WaitStrategy {
     /// Spin with [`std::hint::spin_loop`]. Lowest latency, highest CPU burn.
     SpinLoop,
@@ -486,6 +486,13 @@ mod tests {
         let received = consumer.join().unwrap();
         let expected: Vec<u32> = (0..1024).collect();
         assert_eq!(received, expected);
+    }
+
+    #[test]
+    fn wait_strategy_is_copy() {
+        let s = WaitStrategy::Sleep(std::time::Duration::from_millis(1));
+        let _a = s;
+        let _b = s; // would fail to compile if not Copy
     }
 
     #[test]
