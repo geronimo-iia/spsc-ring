@@ -180,6 +180,20 @@ impl<T> Producer<T> {
     }
 }
 
+impl<T: Copy> Producer<T> {
+    /// Push as many items from `src` as fit. Returns count pushed.
+    pub fn push_slice(&self, src: &[T]) -> usize {
+        let mut count = 0;
+        for &item in src {
+            if self.try_push(item).is_err() {
+                break;
+            }
+            count += 1;
+        }
+        count
+    }
+}
+
 impl<T> Consumer<T> {
     /// Pop a value. Returns `None` if the buffer is empty.
     #[must_use]
@@ -326,5 +340,37 @@ mod tests {
     #[should_panic(expected = "capacity must be a non-zero power of two")]
     fn zero_capacity_panics() {
         let _ = ring::<i32>(0);
+    }
+
+    #[test]
+    fn push_slice_all_fit() {
+        let (tx, rx) = ring(8);
+        let data = [1u32, 2, 3, 4];
+        let pushed = tx.push_slice(&data);
+        assert_eq!(pushed, 4);
+        for &expected in &data {
+            assert_eq!(rx.try_pop(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn push_slice_partial_when_full() {
+        let (tx, _rx) = ring(2);
+        let _ = tx.push_slice(&[10u32, 20]);
+        let pushed = tx.push_slice(&[30u32, 40]);
+        assert_eq!(pushed, 0);
+    }
+
+    #[test]
+    fn push_slice_partial_fit() {
+        let (tx, rx) = ring(4);
+        tx.push_slice(&[1u32, 2]);
+        let pushed = tx.push_slice(&[3u32, 4, 5, 6]);
+        assert_eq!(pushed, 2);
+        assert_eq!(rx.try_pop(), Some(1));
+        assert_eq!(rx.try_pop(), Some(2));
+        assert_eq!(rx.try_pop(), Some(3));
+        assert_eq!(rx.try_pop(), Some(4));
+        assert_eq!(rx.try_pop(), None);
     }
 }
