@@ -37,27 +37,33 @@ Choose `spsc-ring` when you want the smallest, most auditable SPSC queue with gu
 
 ```toml
 [dependencies]
-spsc-ring = "0.1"
+spsc-ring = "0.3"
 ```
 
 ```rust
-use spsc_ring::ring;
+use spsc_ring::{ring, TryRecvError, TrySendError};
 use std::thread;
 
-let (tx, rx) = ring::<u64>(64);
+let (tx, rx) = ring::<u64>(64).unwrap();
 
 thread::spawn(move || {
-    for i in 0..100 {
-        while tx.try_push(i).is_err() {
-            std::hint::spin_loop();
+    for i in 0..100u64 {
+        loop {
+            match tx.try_push(i) {
+                Ok(()) => break,
+                Err(TrySendError::Full(_)) => std::hint::spin_loop(),
+                Err(TrySendError::Disconnected(_)) => return,
+            }
         }
     }
 });
 
 let mut received = Vec::new();
 while received.len() < 100 {
-    if let Some(v) = rx.try_pop() {
-        received.push(v);
+    match rx.try_pop() {
+        Ok(v) => received.push(v),
+        Err(TryRecvError::Empty) => std::hint::spin_loop(),
+        Err(TryRecvError::Disconnected) => break,
     }
 }
 assert_eq!(received, (0..100).collect::<Vec<_>>());
@@ -65,18 +71,22 @@ assert_eq!(received, (0..100).collect::<Vec<_>>());
 
 ## API
 
-| Symbol                               | Description                                                                         |
-| ------------------------------------ | ----------------------------------------------------------------------------------- |
-| `ring<T>(capacity)`                  | Create buffer (capacity must be power of 2). Returns `(Producer<T>, Consumer<T>)`.  |
-| `Producer::try_push(T)`              | Push value. Returns `Err(value)` if full.                                           |
-| `Consumer::try_pop()`                | Pop value. Returns `None` if empty.                                                 |
-| `{Producer,Consumer}::len()`         | Approximate item count.                                                             |
-| `{Producer,Consumer}::capacity()`    | Buffer capacity.                                                                    |
-| `Producer::is_empty()`               | Returns `true` if buffer appears empty.                                             |
-| `Producer::is_full()`                | Returns `true` if buffer appears full.                                              |
-| `Consumer::is_empty()`               | Returns `true` if buffer appears empty.                                             |
-| `Producer::push_slice(&[T])`         | Push items from slice until full. Returns count pushed. Requires `T: Copy`.         |
-| `Consumer::pop_into_slice(&mut [T])` | Pop items into slice until empty or full. Returns count popped. Requires `T: Copy`. |
+| Symbol                               | Description                                                                                                          |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `ring<T>(capacity)`                  | Create buffer (capacity must be power of 2). Returns `Ok((Producer<T>, Consumer<T>))` or `Err(InvalidCapacity)`.    |
+| `Producer::try_push(T)`              | Push value. Returns `Err(TrySendError::Full(T))` if full, `Err(TrySendError::Disconnected(T))` if consumer dropped. |
+| `Consumer::try_pop()`                | Pop value. Returns `Err(TryRecvError::Empty)` if empty, `Err(TryRecvError::Disconnected)` if producer dropped.      |
+| `Producer::push(T, &WaitStrategy)`   | Blocking push. Returns `Err(SendError(T))` if consumer dropped.                                                     |
+| `Consumer::pop(&WaitStrategy)`       | Blocking pop. Returns `Err(RecvError)` if producer dropped and buffer empty.                                         |
+| `Producer::is_disconnected()`        | Returns `true` if consumer has been dropped.                                                                         |
+| `Consumer::is_disconnected()`        | Returns `true` if producer has been dropped.                                                                         |
+| `{Producer,Consumer}::len()`         | Approximate item count.                                                                                              |
+| `{Producer,Consumer}::capacity()`    | Buffer capacity.                                                                                                     |
+| `Producer::is_empty()`               | Returns `true` if buffer appears empty.                                                                              |
+| `Producer::is_full()`                | Returns `true` if buffer appears full.                                                                               |
+| `Consumer::is_empty()`               | Returns `true` if buffer appears empty.                                                                              |
+| `Producer::push_slice(&[T])`         | Push items from slice until full or disconnected. Returns count pushed. Requires `T: Copy`.                          |
+| `Consumer::pop_into_slice(&mut [T])` | Pop items into slice until empty, full, or disconnected. Returns count popped. Requires `T: Copy`.                   |
 
 ## MSRV
 
