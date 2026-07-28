@@ -869,6 +869,61 @@ mod tests {
             99u64
         );
     }
+
+    #[test]
+    fn wait_strategy_sleep_exercises_spin_on_full_buffer() {
+        use std::time::Duration;
+        let (tx, rx) = ring(2).unwrap();
+        tx.try_push(1u32).unwrap();
+        tx.try_push(2u32).unwrap();
+
+        // Consumer drains after a delay — forces push to spin-sleep before slot is free.
+        let consumer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            rx.try_pop().unwrap();
+            rx
+        });
+
+        tx.push(3u32, &WaitStrategy::Sleep(Duration::from_millis(1)))
+            .unwrap();
+        let rx = consumer.join().unwrap();
+        assert_eq!(rx.try_pop(), Ok(2));
+        assert_eq!(rx.try_pop(), Ok(3));
+    }
+
+    #[test]
+    fn push_slice_stops_on_disconnect() {
+        let (tx, rx) = ring::<u32>(8).unwrap();
+        drop(rx);
+        // Buffer is empty and consumer dropped — first try_push returns Disconnected.
+        let pushed = tx.push_slice(&[1, 2, 3, 4]);
+        assert_eq!(pushed, 0);
+        assert!(tx.is_disconnected());
+    }
+
+    #[test]
+    fn pop_into_slice_stops_on_disconnect() {
+        let (tx, rx) = ring::<u32>(8).unwrap();
+        tx.try_push(10).unwrap();
+        tx.try_push(20).unwrap();
+        drop(tx);
+        let mut dst = [0u32; 4];
+        // Drains buffered items, then stops at Disconnected.
+        let popped = rx.pop_into_slice(&mut dst);
+        assert_eq!(popped, 2);
+        assert_eq!(dst[0], 10);
+        assert_eq!(dst[1], 20);
+    }
+
+    #[test]
+    fn both_halves_drop_simultaneously() {
+        // Dropping both ends from separate threads must not double-free or panic.
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        let t1 = std::thread::spawn(move || drop(tx));
+        let t2 = std::thread::spawn(move || drop(rx));
+        t1.join().unwrap();
+        t2.join().unwrap();
+    }
 }
 
 #[cfg(loom)]
