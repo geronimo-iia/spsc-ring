@@ -35,7 +35,7 @@
 //!
 //! let mut received = Vec::new();
 //! while received.len() < 100 {
-//!     if let Some(v) = rx.try_pop() {
+//!     if let Ok(v) = rx.try_pop() {
 //!         received.push(v);
 //!     }
 //! }
@@ -233,19 +233,23 @@ impl<T> Producer<T> {
         self.inner.closed.load(Ordering::Acquire)
     }
 
-    /// Push a value. Returns `Err(value)` if the buffer is full.
+    /// Push a value. Returns `Err` if the buffer is full or the consumer has been dropped.
     ///
     /// # Errors
     ///
-    /// Returns `Err(value)` if the buffer is full.
-    pub fn try_push(&self, value: T) -> Result<(), T> {
+    /// - [`TrySendError::Full`] — buffer is full; value is returned unchanged.
+    /// - [`TrySendError::Disconnected`] — consumer has been dropped; value is returned unchanged.
+    pub fn try_push(&self, value: T) -> Result<(), TrySendError<T>> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(TrySendError::Disconnected(value));
+        }
         let rb = &*self.inner;
         let tail = rb.tail.value.load(Ordering::Relaxed);
         let slot = &rb.slots[tail & rb.mask];
         let seq = slot.sequence.load(Ordering::Acquire);
 
         if seq != tail {
-            return Err(value);
+            return Err(TrySendError::Full(value));
         }
 
         // SAFETY: Sole producer. Sequence check guarantees consumer is done with this slot.
@@ -283,12 +287,17 @@ impl<T> Producer<T> {
     }
 
     /// Push a value, blocking with `strategy` until a slot is free.
-    pub fn push(&self, value: T, strategy: &WaitStrategy) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] containing the value if the consumer has been dropped.
+    pub fn push(&self, value: T, strategy: &WaitStrategy) -> Result<(), SendError<T>> {
         let mut v = value;
         loop {
             match self.try_push(v) {
-                Ok(()) => return,
-                Err(returned) => {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Disconnected(returned)) => return Err(SendError(returned)),
+                Err(TrySendError::Full(returned)) => {
                     strategy.wait();
                     v = returned;
                 }
@@ -308,10 +317,10 @@ impl<T: Copy> Producer<T> {
     pub fn push_slice(&self, src: &[T]) -> usize {
         let mut count = 0;
         for &item in src {
-            if self.try_push(item).is_err() {
-                break;
+            match self.try_push(item) {
+                Ok(()) => count += 1,
+                Err(_) => break,
             }
-            count += 1;
         }
         count
     }
@@ -330,23 +339,30 @@ impl<T> Consumer<T> {
         self.inner.closed.load(Ordering::Acquire)
     }
 
-    /// Pop a value. Returns `None` if the buffer is empty.
-    #[must_use]
-    pub fn try_pop(&self) -> Option<T> {
+    /// Pop a value.
+    ///
+    /// # Errors
+    ///
+    /// - [`TryRecvError::Empty`] — buffer is empty; try again later.
+    /// - [`TryRecvError::Disconnected`] — producer has been dropped and buffer is empty.
+    pub fn try_pop(&self) -> Result<T, TryRecvError> {
         let rb = &*self.inner;
         let head = rb.head.value.load(Ordering::Relaxed);
         let slot = &rb.slots[head & rb.mask];
         let seq = slot.sequence.load(Ordering::Acquire);
 
         if seq != head + 1 {
-            return None;
+            if rb.closed.load(Ordering::Acquire) {
+                return Err(TryRecvError::Disconnected);
+            }
+            return Err(TryRecvError::Empty);
         }
 
         // SAFETY: Sole consumer. Sequence check guarantees producer finished writing.
         let value = unsafe { (*slot.value.get()).take() };
         slot.sequence.store(head + rb.mask + 1, Ordering::Release);
         rb.head.value.store(head + 1, Ordering::Relaxed);
-        value
+        value.ok_or(TryRecvError::Empty)
     }
 
     /// Approximate number of items in the buffer.
@@ -371,12 +387,17 @@ impl<T> Consumer<T> {
     }
 
     /// Pop a value, blocking with `strategy` until one is available.
-    pub fn pop(&self, strategy: &WaitStrategy) -> T {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvError`] if the producer has been dropped and the buffer is empty.
+    pub fn pop(&self, strategy: &WaitStrategy) -> Result<T, RecvError> {
         loop {
-            if let Some(v) = self.try_pop() {
-                return v;
+            match self.try_pop() {
+                Ok(v) => return Ok(v),
+                Err(TryRecvError::Disconnected) => return Err(RecvError),
+                Err(TryRecvError::Empty) => strategy.wait(),
             }
-            strategy.wait();
         }
     }
 }
@@ -387,11 +408,11 @@ impl<T: Copy> Consumer<T> {
         let mut count = 0;
         for slot in dst.iter_mut() {
             match self.try_pop() {
-                Some(v) => {
+                Ok(v) => {
                     *slot = v;
                     count += 1;
                 }
-                None => break,
+                Err(_) => break,
             }
         }
         count
@@ -407,7 +428,7 @@ mod tests {
     fn push_pop_single() {
         let (tx, rx) = ring(4).unwrap();
         assert!(tx.try_push(42).is_ok());
-        assert_eq!(rx.try_pop(), Some(42));
+        assert_eq!(rx.try_pop(), Ok(42));
     }
 
     #[test]
@@ -415,13 +436,13 @@ mod tests {
         let (tx, _rx) = ring(2).unwrap();
         assert!(tx.try_push(1).is_ok());
         assert!(tx.try_push(2).is_ok());
-        assert_eq!(tx.try_push(3), Err(3));
+        assert_eq!(tx.try_push(3), Err(TrySendError::Full(3)));
     }
 
     #[test]
     fn empty_returns_none() {
         let (_tx, rx) = ring::<i32>(4).unwrap();
-        assert_eq!(rx.try_pop(), None);
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Empty));
     }
 
     #[test]
@@ -431,7 +452,7 @@ mod tests {
             tx.try_push(i).unwrap();
         }
         for i in 0..4 {
-            assert_eq!(rx.try_pop(), Some(i));
+            assert_eq!(rx.try_pop(), Ok(i));
         }
     }
 
@@ -443,7 +464,7 @@ mod tests {
                 tx.try_push(round * 4 + i).unwrap();
             }
             for i in 0..4 {
-                assert_eq!(rx.try_pop(), Some(round * 4 + i));
+                assert_eq!(rx.try_pop(), Ok(round * 4 + i));
             }
         }
     }
@@ -455,8 +476,12 @@ mod tests {
 
         let producer = thread::spawn(move || {
             for i in 0..count {
-                while tx.try_push(i).is_err() {
-                    std::hint::spin_loop();
+                loop {
+                    match tx.try_push(i) {
+                        Ok(()) => break,
+                        Err(TrySendError::Full(_)) => std::hint::spin_loop(),
+                        Err(TrySendError::Disconnected(_)) => return,
+                    }
                 }
             }
         });
@@ -464,10 +489,10 @@ mod tests {
         let consumer = thread::spawn(move || {
             let mut received = Vec::with_capacity(count);
             while received.len() < count {
-                if let Some(v) = rx.try_pop() {
-                    received.push(v);
-                } else {
-                    std::hint::spin_loop();
+                match rx.try_pop() {
+                    Ok(v) => received.push(v),
+                    Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                    Err(TryRecvError::Disconnected) => break,
                 }
             }
             received
@@ -499,7 +524,7 @@ mod tests {
         let pushed = tx.push_slice(&data);
         assert_eq!(pushed, 4);
         for &expected in &data {
-            assert_eq!(rx.try_pop(), Some(expected));
+            assert_eq!(rx.try_pop(), Ok(expected));
         }
     }
 
@@ -542,7 +567,7 @@ mod tests {
         let popped = rx.pop_into_slice(&mut dst);
         assert_eq!(popped, 3);
         assert_eq!(dst, [0, 1, 2]);
-        assert_eq!(rx.try_pop(), Some(3));
+        assert_eq!(rx.try_pop(), Ok(3));
     }
 
     #[test]
@@ -603,6 +628,57 @@ mod tests {
     }
 
     #[test]
+    fn producer_drop_signals_disconnected() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        drop(tx);
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Disconnected));
+    }
+
+    #[test]
+    fn consumer_drop_signals_disconnected() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        drop(rx);
+        assert_eq!(tx.try_push(1), Err(TrySendError::Disconnected(1)));
+    }
+
+    #[test]
+    fn try_pop_returns_empty_when_buffer_empty() {
+        let (_tx, rx) = ring::<u32>(4).unwrap();
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn try_push_returns_full_when_buffer_full() {
+        let (tx, _rx) = ring::<u32>(2).unwrap();
+        tx.try_push(1).unwrap();
+        tx.try_push(2).unwrap();
+        assert_eq!(tx.try_push(3), Err(TrySendError::Full(3)));
+    }
+
+    #[test]
+    fn pop_returns_recv_error_on_disconnect() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        drop(tx);
+        assert_eq!(rx.pop(&WaitStrategy::SpinLoop), Err(RecvError));
+    }
+
+    #[test]
+    fn push_returns_send_error_on_disconnect() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        drop(rx);
+        assert_eq!(tx.push(42, &WaitStrategy::SpinLoop), Err(SendError(42)));
+    }
+
+    #[test]
+    fn pop_returns_value_before_checking_disconnect() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        tx.try_push(99).unwrap();
+        drop(tx);
+        assert_eq!(rx.pop(&WaitStrategy::SpinLoop), Ok(99));
+        assert_eq!(rx.pop(&WaitStrategy::SpinLoop), Err(RecvError));
+    }
+
+    #[test]
     fn error_types_exist() {
         let _: RecvError = RecvError;
         let _: SendError<u32> = SendError(42);
@@ -625,11 +701,11 @@ mod tests {
         tx.push_slice(&[1u32, 2]);
         let pushed = tx.push_slice(&[3u32, 4, 5, 6]);
         assert_eq!(pushed, 2);
-        assert_eq!(rx.try_pop(), Some(1));
-        assert_eq!(rx.try_pop(), Some(2));
-        assert_eq!(rx.try_pop(), Some(3));
-        assert_eq!(rx.try_pop(), Some(4));
-        assert_eq!(rx.try_pop(), None);
+        assert_eq!(rx.try_pop(), Ok(1));
+        assert_eq!(rx.try_pop(), Ok(2));
+        assert_eq!(rx.try_pop(), Ok(3));
+        assert_eq!(rx.try_pop(), Ok(4));
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Empty));
     }
 
     #[test]
@@ -644,10 +720,10 @@ mod tests {
             rx
         });
 
-        tx.push(3, &WaitStrategy::SpinLoop);
+        tx.push(3, &WaitStrategy::SpinLoop).unwrap();
         let rx = consumer.join().unwrap();
-        assert_eq!(rx.try_pop(), Some(2));
-        assert_eq!(rx.try_pop(), Some(3));
+        assert_eq!(rx.try_pop(), Ok(2));
+        assert_eq!(rx.try_pop(), Ok(3));
     }
 
     #[test]
@@ -659,7 +735,7 @@ mod tests {
             tx.try_push(42).unwrap();
         });
 
-        let value = rx.pop(&WaitStrategy::Yield);
+        let value = rx.pop(&WaitStrategy::Yield).unwrap();
         assert_eq!(value, 42u32);
         producer.join().unwrap();
     }
@@ -668,9 +744,9 @@ mod tests {
     fn wait_strategy_sleep_push_pop() {
         use std::time::Duration;
         let (tx, rx) = ring(4).unwrap();
-        tx.push(99u64, &WaitStrategy::Sleep(Duration::from_millis(1)));
+        tx.push(99u64, &WaitStrategy::Sleep(Duration::from_millis(1))).unwrap();
         assert_eq!(
-            rx.pop(&WaitStrategy::Sleep(Duration::from_millis(1))),
+            rx.pop(&WaitStrategy::Sleep(Duration::from_millis(1))).unwrap(),
             99u64
         );
     }
