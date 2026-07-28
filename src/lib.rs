@@ -51,7 +51,9 @@
 #![deny(missing_docs)]
 #![allow(unsafe_code)]
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -171,7 +173,7 @@ impl PaddedAtomicUsize {
 
 struct Slot<T> {
     sequence: AtomicUsize,
-    value: UnsafeCell<Option<T>>,
+    value: UnsafeCell<MaybeUninit<T>>,
 }
 
 struct RingBuffer<T> {
@@ -186,6 +188,22 @@ struct RingBuffer<T> {
 // and one Consumer exist. The sequence-number protocol ensures no data race.
 unsafe impl<T: Send> Send for RingBuffer<T> {}
 unsafe impl<T: Send> Sync for RingBuffer<T> {}
+
+impl<T> Drop for RingBuffer<T> {
+    fn drop(&mut self) {
+        // Drain any items remaining in the buffer so their destructors run.
+        // head and tail are exclusively owned at this point (both Arc halves dropped).
+        let mut head = self.head.value.load(Ordering::Relaxed);
+        let tail = self.tail.value.load(Ordering::Relaxed);
+        while head != tail {
+            let slot = &self.slots[head & self.mask];
+            // SAFETY: head != tail means producer wrote this slot and consumer
+            // has not yet read it. No other thread is alive (both halves dropped).
+            unsafe { (*slot.value.get()).assume_init_drop() };
+            head = head.wrapping_add(1);
+        }
+    }
+}
 
 /// Create an SPSC ring buffer with the given capacity (must be a power of 2).
 ///
@@ -202,7 +220,7 @@ pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), Inva
     let slots: Vec<Slot<T>> = (0..capacity)
         .map(|i| Slot {
             sequence: AtomicUsize::new(i),
-            value: UnsafeCell::new(None),
+            value: UnsafeCell::new(MaybeUninit::uninit()),
         })
         .collect();
 
@@ -217,19 +235,25 @@ pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), Inva
     Ok((
         Producer {
             inner: Arc::clone(&inner),
+            _not_sync: PhantomData,
         },
-        Consumer { inner },
+        Consumer {
+            inner,
+            _not_sync: PhantomData,
+        },
     ))
 }
 
 /// Write half of the SPSC ring. Not `Clone` — only one producer exists.
 pub struct Producer<T> {
     inner: Arc<RingBuffer<T>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 /// Read half of the SPSC ring. Not `Clone` — only one consumer exists.
 pub struct Consumer<T> {
     inner: Arc<RingBuffer<T>>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<T> Producer<T> {
@@ -258,8 +282,8 @@ impl<T> Producer<T> {
             return Err(TrySendError::Full(value));
         }
 
-        // SAFETY: Sole producer. Sequence check guarantees consumer is done with this slot.
-        unsafe { *slot.value.get() = Some(value) };
+        // SAFETY: Sole producer. Sequence check guarantees consumer finished reading this slot.
+        unsafe { (*slot.value.get()).write(value) };
         slot.sequence.store(tail + 1, Ordering::Release);
         rb.tail.value.store(tail + 1, Ordering::Relaxed);
         Ok(())
@@ -350,6 +374,10 @@ impl<T> Drop for Producer<T> {
 
 impl<T: Copy> Producer<T> {
     /// Push as many items from `src` as fit. Returns count pushed.
+    ///
+    /// Stops early if the buffer is full or the consumer has been dropped.
+    /// If `count < src.len()`, call [`Producer::is_disconnected`] to distinguish
+    /// the two cases — a full buffer is retriable, a disconnect is permanent.
     pub fn push_slice(&self, src: &[T]) -> usize {
         let mut count = 0;
         for &item in src {
@@ -395,10 +423,12 @@ impl<T> Consumer<T> {
         }
 
         // SAFETY: Sole consumer. Sequence check guarantees producer finished writing.
-        let value = unsafe { (*slot.value.get()).take() };
+        // assume_init_read performs a bitwise copy — safe because the producer wrote
+        // a valid T and we release the slot immediately after, ensuring no double-read.
+        let value = unsafe { (*slot.value.get()).assume_init_read() };
         slot.sequence.store(head + rb.mask + 1, Ordering::Release);
         rb.head.value.store(head + 1, Ordering::Relaxed);
-        value.ok_or(TryRecvError::Empty)
+        Ok(value)
     }
 
     /// Approximate number of items currently in the buffer.
@@ -471,6 +501,10 @@ impl<T> Consumer<T> {
 
 impl<T: Copy> Consumer<T> {
     /// Pop as many items into `dst` as are available. Returns count popped.
+    ///
+    /// Stops early if the buffer is empty or the producer has been dropped.
+    /// If `count < dst.len()`, call [`Consumer::is_disconnected`] to distinguish
+    /// the two cases — an empty buffer may refill, a disconnect will not.
     pub fn pop_into_slice(&self, dst: &mut [T]) -> usize {
         let mut count = 0;
         for slot in dst.iter_mut() {
