@@ -17,7 +17,16 @@ Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero de
 
 ## Performance
 
-118M events/sec, 8ns/event (1024-slot buffer, measured on PoC-E).
+Measured on PoC-E, 1024-slot buffer. Results vary by hardware and thermal state.
+
+| Benchmark | Median | Throughput |
+|---|---|---|
+| Single-item `try_push`/`try_pop` (1M events) | 7.3 ms | ~137M events/sec |
+| `push_slice`/`pop_into_slice` chunk=8 | 5.1 ms | ~197M events/sec |
+| `push_slice`/`pop_into_slice` chunk=32 | 4.7 ms | ~215M events/sec |
+| `push_slice`/`pop_into_slice` chunk=256 | 4.4 ms | ~227M events/sec |
+
+Slice ops yield ~1.6× throughput over single-item path at chunk≥32.
 
 ## Comparison
 
@@ -71,22 +80,22 @@ assert_eq!(received, (0..100).collect::<Vec<_>>());
 
 ## API
 
-| Symbol                               | Description                                                                                                          |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| Symbol                               | Description                                                                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | `ring<T>(capacity)`                  | Create buffer (capacity must be power of 2). Returns `Ok((Producer<T>, Consumer<T>))` or `Err(InvalidCapacity)`.    |
 | `Producer::try_push(T)`              | Push value. Returns `Err(TrySendError::Full(T))` if full, `Err(TrySendError::Disconnected(T))` if consumer dropped. |
 | `Consumer::try_pop()`                | Pop value. Returns `Err(TryRecvError::Empty)` if empty, `Err(TryRecvError::Disconnected)` if producer dropped.      |
 | `Producer::push(T, &WaitStrategy)`   | Blocking push. Returns `Err(SendError(T))` if consumer dropped.                                                     |
-| `Consumer::pop(&WaitStrategy)`       | Blocking pop. Returns `Err(RecvError)` if producer dropped and buffer empty.                                         |
-| `Producer::is_disconnected()`        | Returns `true` if consumer has been dropped.                                                                         |
-| `Consumer::is_disconnected()`        | Returns `true` if producer has been dropped.                                                                         |
-| `{Producer,Consumer}::len()`         | Approximate item count (Relaxed snapshot — use for hints only, not correctness).                                     |
-| `{Producer,Consumer}::capacity()`    | Buffer capacity.                                                                                                     |
-| `Producer::is_empty()`               | Returns `true` if buffer appears empty.                                                                              |
-| `Producer::is_full()`                | Returns `true` if buffer appears full.                                                                               |
-| `Consumer::is_empty()`               | Returns `true` if buffer appears empty.                                                                              |
-| `Producer::push_slice(&[T])`         | Push items from slice until full or disconnected. Returns count pushed. Requires `T: Copy`.                          |
-| `Consumer::pop_into_slice(&mut [T])` | Pop items into slice until empty, full, or disconnected. Returns count popped. Requires `T: Copy`.                   |
+| `Consumer::pop(&WaitStrategy)`       | Blocking pop. Returns `Err(RecvError)` if producer dropped and buffer empty.                                        |
+| `Producer::is_disconnected()`        | Returns `true` if consumer has been dropped.                                                                        |
+| `Consumer::is_disconnected()`        | Returns `true` if producer has been dropped.                                                                        |
+| `{Producer,Consumer}::len()`         | Approximate item count (Relaxed snapshot — use for hints only, not correctness).                                    |
+| `{Producer,Consumer}::capacity()`    | Buffer capacity.                                                                                                    |
+| `Producer::is_empty()`               | Returns `true` if buffer appears empty.                                                                             |
+| `Producer::is_full()`                | Returns `true` if buffer appears full.                                                                              |
+| `Consumer::is_empty()`               | Returns `true` if buffer appears empty.                                                                             |
+| `Producer::push_slice(&[T])`         | Push items from slice until full or disconnected. Returns count pushed. Requires `T: Copy`.                         |
+| `Consumer::pop_into_slice(&mut [T])` | Pop items into slice until empty, full, or disconnected. Returns count popped. Requires `T: Copy`.                  |
 
 ## MSRV
 
