@@ -23,7 +23,7 @@
 //! use spsc_ring::ring;
 //! use std::thread;
 //!
-//! let (tx, rx) = ring::<u64>(64);
+//! let (tx, rx) = ring::<u64>(64).unwrap();
 //!
 //! thread::spawn(move || {
 //!     for i in 0..100 {
@@ -185,15 +185,13 @@ unsafe impl<T: Send> Sync for RingBuffer<T> {}
 ///
 /// Returns `(Producer, Consumer)` — send each half to its own thread.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `capacity` is zero or not a power of two.
-#[must_use]
-pub fn ring<T: Send>(capacity: usize) -> (Producer<T>, Consumer<T>) {
-    assert!(
-        capacity > 0 && capacity.is_power_of_two(),
-        "capacity must be a non-zero power of two"
-    );
+/// Returns [`InvalidCapacity`] if `capacity` is zero or not a power of two.
+pub fn ring<T: Send>(capacity: usize) -> Result<(Producer<T>, Consumer<T>), InvalidCapacity> {
+    if capacity == 0 || !capacity.is_power_of_two() {
+        return Err(InvalidCapacity(capacity));
+    }
 
     let slots: Vec<Slot<T>> = (0..capacity)
         .map(|i| Slot {
@@ -210,12 +208,12 @@ pub fn ring<T: Send>(capacity: usize) -> (Producer<T>, Consumer<T>) {
         closed: AtomicBool::new(false),
     });
 
-    (
+    Ok((
         Producer {
             inner: Arc::clone(&inner),
         },
         Consumer { inner },
-    )
+    ))
 }
 
 /// Write half of the SPSC ring. Not `Clone` — only one producer exists.
@@ -407,14 +405,14 @@ mod tests {
 
     #[test]
     fn push_pop_single() {
-        let (tx, rx) = ring(4);
+        let (tx, rx) = ring(4).unwrap();
         assert!(tx.try_push(42).is_ok());
         assert_eq!(rx.try_pop(), Some(42));
     }
 
     #[test]
     fn full_returns_err() {
-        let (tx, _rx) = ring(2);
+        let (tx, _rx) = ring(2).unwrap();
         assert!(tx.try_push(1).is_ok());
         assert!(tx.try_push(2).is_ok());
         assert_eq!(tx.try_push(3), Err(3));
@@ -422,13 +420,13 @@ mod tests {
 
     #[test]
     fn empty_returns_none() {
-        let (_tx, rx) = ring::<i32>(4);
+        let (_tx, rx) = ring::<i32>(4).unwrap();
         assert_eq!(rx.try_pop(), None);
     }
 
     #[test]
     fn fifo_order() {
-        let (tx, rx) = ring(4);
+        let (tx, rx) = ring(4).unwrap();
         for i in 0..4 {
             tx.try_push(i).unwrap();
         }
@@ -439,7 +437,7 @@ mod tests {
 
     #[test]
     fn wrap_around() {
-        let (tx, rx) = ring(4);
+        let (tx, rx) = ring(4).unwrap();
         for round in 0..3 {
             for i in 0..4 {
                 tx.try_push(round * 4 + i).unwrap();
@@ -452,7 +450,7 @@ mod tests {
 
     #[test]
     fn concurrent_spsc() {
-        let (tx, rx) = ring(64);
+        let (tx, rx) = ring(64).unwrap();
         let count = 100_000;
 
         let producer = thread::spawn(move || {
@@ -483,7 +481,7 @@ mod tests {
 
     #[test]
     fn len_and_capacity() {
-        let (tx, rx) = ring(4);
+        let (tx, rx) = ring(4).unwrap();
         assert_eq!(tx.capacity(), 4);
         assert!(rx.is_empty());
         tx.try_push(1).unwrap();
@@ -495,20 +493,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "capacity must be a non-zero power of two")]
-    fn non_power_of_two_panics() {
-        let _ = ring::<i32>(3);
-    }
-
-    #[test]
-    #[should_panic(expected = "capacity must be a non-zero power of two")]
-    fn zero_capacity_panics() {
-        let _ = ring::<i32>(0);
-    }
-
-    #[test]
     fn push_slice_all_fit() {
-        let (tx, rx) = ring(8);
+        let (tx, rx) = ring(8).unwrap();
         let data = [1u32, 2, 3, 4];
         let pushed = tx.push_slice(&data);
         assert_eq!(pushed, 4);
@@ -519,7 +505,7 @@ mod tests {
 
     #[test]
     fn push_slice_partial_when_full() {
-        let (tx, _rx) = ring(2);
+        let (tx, _rx) = ring(2).unwrap();
         let _ = tx.push_slice(&[10u32, 20]);
         let pushed = tx.push_slice(&[30u32, 40]);
         assert_eq!(pushed, 0);
@@ -527,7 +513,7 @@ mod tests {
 
     #[test]
     fn pop_into_slice_all_available() {
-        let (tx, rx) = ring(8);
+        let (tx, rx) = ring(8).unwrap();
         for i in 0..4u32 {
             tx.try_push(i).unwrap();
         }
@@ -539,7 +525,7 @@ mod tests {
 
     #[test]
     fn pop_into_slice_empty_buffer() {
-        let (_tx, rx) = ring::<u32>(4);
+        let (_tx, rx) = ring::<u32>(4).unwrap();
         let mut dst = [0u32; 4];
         let popped = rx.pop_into_slice(&mut dst);
         assert_eq!(popped, 0);
@@ -548,7 +534,7 @@ mod tests {
 
     #[test]
     fn pop_into_slice_partial_dst() {
-        let (tx, rx) = ring(8);
+        let (tx, rx) = ring(8).unwrap();
         for i in 0..6u32 {
             tx.try_push(i).unwrap();
         }
@@ -561,7 +547,7 @@ mod tests {
 
     #[test]
     fn push_pop_slice_roundtrip_concurrent() {
-        let (tx, rx) = ring(256);
+        let (tx, rx) = ring(256).unwrap();
         let data: Vec<u32> = (0..1024).collect();
         let data_clone = data.clone();
 
@@ -591,23 +577,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "depends on Task 3+4 signatures"]
-    fn producer_drop_signals_disconnected() {
-        let (tx, rx) = ring::<u32>(4).unwrap();
-        drop(tx);
-        assert_eq!(rx.try_pop(), Err(TryRecvError::Disconnected));
+    fn ring_returns_err_on_non_power_of_two() {
+        assert!(ring::<u32>(3).is_err());
+        assert!(ring::<u32>(0).is_err());
     }
 
     #[test]
-    #[ignore = "depends on Task 3+4 signatures"]
-    fn consumer_drop_signals_disconnected() {
-        let (tx, rx) = ring::<u32>(4).unwrap();
-        drop(rx);
-        assert_eq!(tx.try_push(1), Err(TrySendError::Disconnected(1)));
+    fn ring_returns_ok_on_valid_capacity() {
+        assert!(ring::<u32>(4).is_ok());
+        assert!(ring::<u32>(1).is_ok());
     }
 
     #[test]
-    #[ignore = "depends on Task 3 ring() Result signature"]
     fn is_disconnected_false_while_both_live() {
         let (tx, rx) = ring::<u32>(4).unwrap();
         assert!(!tx.is_disconnected());
@@ -615,7 +596,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "depends on Task 3 ring() Result signature"]
     fn is_disconnected_true_after_drop() {
         let (tx, rx) = ring::<u32>(4).unwrap();
         drop(rx);
@@ -641,7 +621,7 @@ mod tests {
 
     #[test]
     fn push_slice_partial_fit() {
-        let (tx, rx) = ring(4);
+        let (tx, rx) = ring(4).unwrap();
         tx.push_slice(&[1u32, 2]);
         let pushed = tx.push_slice(&[3u32, 4, 5, 6]);
         assert_eq!(pushed, 2);
@@ -654,7 +634,7 @@ mod tests {
 
     #[test]
     fn wait_strategy_spin_loop_waits_until_slot_free() {
-        let (tx, rx) = ring(2);
+        let (tx, rx) = ring(2).unwrap();
         tx.try_push(1).unwrap();
         tx.try_push(2).unwrap();
 
@@ -672,7 +652,7 @@ mod tests {
 
     #[test]
     fn wait_strategy_yield_waits_until_value_available() {
-        let (tx, rx) = ring(4);
+        let (tx, rx) = ring(4).unwrap();
 
         let producer = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -687,7 +667,7 @@ mod tests {
     #[test]
     fn wait_strategy_sleep_push_pop() {
         use std::time::Duration;
-        let (tx, rx) = ring(4);
+        let (tx, rx) = ring(4).unwrap();
         tx.push(99u64, &WaitStrategy::Sleep(Duration::from_millis(1)));
         assert_eq!(
             rx.pop(&WaitStrategy::Sleep(Duration::from_millis(1))),
