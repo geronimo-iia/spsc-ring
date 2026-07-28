@@ -934,6 +934,21 @@ mod tests {
         }
         assert_eq!(rx.try_pop(), Err(TryRecvError::Empty));
     }
+
+    #[test]
+    fn push_slice_empty_is_noop() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        assert_eq!(tx.push_slice(&[]), 0);
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn pop_into_slice_empty_is_noop() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        tx.try_push(1).unwrap();
+        assert_eq!(rx.pop_into_slice(&mut []), 0);
+        assert_eq!(rx.try_pop(), Ok(1));
+    }
 }
 
 #[cfg(loom)]
