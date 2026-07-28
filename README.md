@@ -17,16 +17,21 @@ Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero de
 
 ## Performance
 
-Measured on PoC-E, 1024-slot buffer. Results vary by hardware and thermal state.
+Measured on PoC-E, 1024-slot buffer.
 
-| Benchmark | Median | Throughput |
-|---|---|---|
-| Single-item `try_push`/`try_pop` (1M events) | 7.3 ms | ~137M events/sec |
-| `push_slice`/`pop_into_slice` chunk=8 | 5.1 ms | ~197M events/sec |
-| `push_slice`/`pop_into_slice` chunk=32 | 4.7 ms | ~215M events/sec |
-| `push_slice`/`pop_into_slice` chunk=256 | 4.4 ms | ~227M events/sec |
+| Benchmark                          | Mean (ms) | ± σ (ms) | Throughput      |
+|------------------------------------|-----------|----------|-----------------|
+| spsc_1M_events                     | 7.14      | ± 0.56   | ~140M ev/s      |
+| spsc_push_slice_1M_chunk64         | 5.92      | ± 0.20   | ~169M ev/s      |
+| spsc_push_slice_chunk_size/1       | 8.01      | ± 0.52   | ~125M ev/s      |
+| spsc_push_slice_chunk_size/8       | 3.69      | ± 0.25   | ~271M ev/s      |
+| spsc_push_slice_chunk_size/32      | 4.19      | ± 0.48   | ~239M ev/s      |
+| spsc_push_slice_chunk_size/64      | 4.18      | ± 0.27   | ~239M ev/s      |
+| spsc_push_slice_chunk_size/256     | 4.25      | ± 0.62   | ~235M ev/s      |
 
-Slice ops yield ~1.6× throughput over single-item path at chunk≥32.
+Median of 3 runs, ±σ across runs. Results vary by hardware and thermal state.
+
+Slice ops yield ~1.9× throughput over single-item path at chunk≥8.
 
 ## Comparison
 
