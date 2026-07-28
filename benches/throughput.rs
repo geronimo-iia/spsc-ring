@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
 use spsc_ring::ring;
+use std::hint::black_box;
 use std::thread;
 
 fn throughput_1m(c: &mut Criterion) {
