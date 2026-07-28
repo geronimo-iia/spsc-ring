@@ -31,5 +31,8 @@ fn main() {
     let received = consumer.join().unwrap();
 
     assert_eq!(received, (0..20).collect::<Vec<_>>());
-    println!("received {} items, exited cleanly on disconnect", received.len());
+    println!(
+        "received {} items, exited cleanly on disconnect",
+        received.len()
+    );
 }
