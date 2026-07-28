@@ -12,7 +12,7 @@ Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero de
 - **Lock-free SPSC** — sequence-number protocol, Acquire/Release only
 - **Cache-line padded** — producer/consumer cursors on separate cache lines (false-sharing eliminated by design)
 - **Zero dependencies** — pure `std`, no optional feature flags pulling in extra crates
-- **Compile-time SPSC contract** — `Producer<T>` and `Consumer<T>` are `Send` but not `Clone`
+- **Compile-time SPSC contract** — `Producer<T>` and `Consumer<T>` are `Send` but not `Clone` and not `Sync` — sharing a half across threads is a compile error
 - **Minimal surface** — `try_push`, `try_pop`, `push_slice`, `pop_into_slice`, `len` — nothing else to audit
 
 ## Performance
@@ -76,6 +76,60 @@ while received.len() < 100 {
     }
 }
 assert_eq!(received, (0..100).collect::<Vec<_>>());
+```
+
+### Bulk throughput with `push_slice` / `pop_into_slice`
+
+For `T: Copy`, slice ops amortise the per-item overhead and yield ~1.6× throughput at chunk≥32.
+
+```rust
+use spsc_ring::ring;
+use std::thread;
+
+let (tx, rx) = ring::<u32>(1024).unwrap();
+
+let producer = thread::spawn(move || {
+    let batch = [1u32; 32];
+    let mut sent = 0;
+    while sent < 1_000_000 {
+        sent += tx.push_slice(&batch);
+    }
+});
+
+let consumer = thread::spawn(move || {
+    let mut buf = [0u32; 32];
+    let mut received = 0;
+    while received < 1_000_000 {
+        received += rx.pop_into_slice(&mut buf);
+    }
+});
+
+producer.join().unwrap();
+consumer.join().unwrap();
+```
+
+### Disconnect detection
+
+Both halves set a shared `closed` flag on drop. The other side observes it on the next call.
+
+```rust
+use spsc_ring::{ring, TryRecvError};
+use std::thread;
+
+let (tx, rx) = ring::<u32>(16).unwrap();
+
+thread::spawn(move || {
+    tx.try_push(42).unwrap();
+    // tx dropped here — signals disconnect
+});
+
+loop {
+    match rx.try_pop() {
+        Ok(v) => println!("got {v}"),
+        Err(TryRecvError::Empty) => std::hint::spin_loop(),
+        Err(TryRecvError::Disconnected) => break,
+    }
+}
 ```
 
 ## API
