@@ -7,6 +7,18 @@ Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero de
 [![docs.rs](https://docs.rs/spsc-ring/badge.svg)](https://docs.rs/spsc-ring)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
+## Background
+
+This crate implements the single-producer/single-consumer (SPSC) variant of the [LMAX Disruptor pattern](https://lmax-exchange.github.io/disruptor/disruptor.html) — a lock-free ring buffer built around sequence numbers and `Acquire`/`Release` memory barriers, with no CAS operations on the hot path.
+
+The key insight from the Disruptor paper: in the SPSC case, coordination requires no mutex and no compare-and-swap. Each slot carries a sequence stamp. The producer writes a value then releases the stamp; the consumer acquires the stamp then reads the value. The stamp is the only synchronisation point.
+
+False sharing — the invisible performance killer — is eliminated by padding the producer and consumer cursors onto separate cache lines. Slots are aligned to prevent adjacent-slot invalidation under load.
+
+The pattern is compelling enough that I had to explore it hands-on. `spsc-ring` is the result.
+
+If you need more — multi-producer, consumer dependency graphs, pipeline fan-out, async, or static allocation — the Rust ecosystem has you covered: [disruptor-rs](https://crates.io/crates/disruptor), [rtrb](https://crates.io/crates/rtrb), [ringbuf](https://crates.io/crates/ringbuf).
+
 ## Features
 
 - **Lock-free SPSC** — sequence-number protocol, Acquire/Release only
