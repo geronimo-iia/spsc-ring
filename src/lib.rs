@@ -12,11 +12,6 @@
 //! The SPSC contract is enforced at compile time: [`ring`] returns a
 //! `(Producer<T>, Consumer<T>)` pair. Each half is `Send` but not `Clone`.
 //!
-//! ## Performance
-//!
-//! 118M events/sec, 8ns/event (measured on PoC-E, 1024-slot buffer).
-//! Target: >100M events/sec, <100ns/event.
-//!
 //! ## Example
 //!
 //! ```
@@ -145,6 +140,7 @@ pub enum WaitStrategy {
 }
 
 impl WaitStrategy {
+    #[inline]
     fn wait(&self) {
         match self {
             WaitStrategy::SpinLoop => std::hint::spin_loop(),
@@ -272,6 +268,7 @@ impl<T> Producer<T> {
     ///
     /// - [`TrySendError::Full`] — buffer is full; value is returned unchanged.
     /// - [`TrySendError::Disconnected`] — consumer has been dropped; value is returned unchanged.
+    #[inline]
     pub fn try_push(&self, value: T) -> Result<(), TrySendError<T>> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(TrySendError::Disconnected(value));
@@ -381,6 +378,7 @@ impl<T: Copy> Producer<T> {
     /// Stops early if the buffer is full or the consumer has been dropped.
     /// If `count < src.len()`, call [`Producer::is_disconnected`] to distinguish
     /// the two cases — a full buffer is retriable, a disconnect is permanent.
+    #[inline]
     pub fn push_slice(&self, src: &[T]) -> usize {
         let mut count = 0;
         for &item in src {
@@ -412,6 +410,7 @@ impl<T> Consumer<T> {
     ///
     /// - [`TryRecvError::Empty`] — buffer is empty; try again later.
     /// - [`TryRecvError::Disconnected`] — producer has been dropped and buffer is empty.
+    #[inline]
     pub fn try_pop(&self) -> Result<T, TryRecvError> {
         let rb = &*self.inner;
         let head = rb.head.value.load(Ordering::Relaxed);
@@ -508,6 +507,7 @@ impl<T: Copy> Consumer<T> {
     /// Stops early if the buffer is empty or the producer has been dropped.
     /// If `count < dst.len()`, call [`Consumer::is_disconnected`] to distinguish
     /// the two cases — an empty buffer may refill, a disconnect will not.
+    #[inline]
     pub fn pop_into_slice(&self, dst: &mut [T]) -> usize {
         let mut count = 0;
         for slot in dst.iter_mut() {
