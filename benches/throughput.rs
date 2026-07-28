@@ -1,19 +1,22 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ring_rs::ring;
 use std::thread;
 
-fn bench_throughput(c: &mut Criterion) {
-    c.bench_function("spsc_1024", |b| {
+fn throughput_1m(c: &mut Criterion) {
+    let count = 1_000_000usize;
+
+    c.bench_function("spsc_1M_events", |b| {
         b.iter(|| {
-            let (tx, rx) = ring::<u64>(1024);
-            let count = 10_000usize;
+            let (tx, rx) = ring(1024);
+
             let producer = thread::spawn(move || {
                 for i in 0..count {
-                    while tx.try_push(i as u64).is_err() {
+                    while tx.try_push(black_box(i)).is_err() {
                         std::hint::spin_loop();
                     }
                 }
             });
+
             let consumer = thread::spawn(move || {
                 let mut n = 0usize;
                 while n < count {
@@ -23,12 +26,15 @@ fn bench_throughput(c: &mut Criterion) {
                         std::hint::spin_loop();
                     }
                 }
+                n
             });
+
             producer.join().unwrap();
-            consumer.join().unwrap();
-        })
+            let received = consumer.join().unwrap();
+            assert_eq!(received, count);
+        });
     });
 }
 
-criterion_group!(benches, bench_throughput);
+criterion_group!(benches, throughput_1m);
 criterion_main!(benches);
