@@ -20,23 +20,29 @@
 //! ## Example
 //!
 //! ```
-//! use spsc_ring::ring;
+//! use spsc_ring::{ring, TryRecvError, TrySendError};
 //! use std::thread;
 //!
 //! let (tx, rx) = ring::<u64>(64).unwrap();
 //!
 //! thread::spawn(move || {
-//!     for i in 0..100 {
-//!         while tx.try_push(i).is_err() {
-//!             std::hint::spin_loop();
+//!     for i in 0..100u64 {
+//!         loop {
+//!             match tx.try_push(i) {
+//!                 Ok(()) => break,
+//!                 Err(TrySendError::Full(_)) => std::hint::spin_loop(),
+//!                 Err(TrySendError::Disconnected(_)) => return,
+//!             }
 //!         }
 //!     }
 //! });
 //!
 //! let mut received = Vec::new();
 //! while received.len() < 100 {
-//!     if let Ok(v) = rx.try_pop() {
-//!         received.push(v);
+//!     match rx.try_pop() {
+//!         Ok(v) => received.push(v),
+//!         Err(TryRecvError::Empty) => std::hint::spin_loop(),
+//!         Err(TryRecvError::Disconnected) => break,
 //!     }
 //! }
 //! assert_eq!(received, (0..100).collect::<Vec<_>>());

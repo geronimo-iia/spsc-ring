@@ -37,7 +37,7 @@ Choose `spsc-ring` when you want the smallest, most auditable SPSC queue with gu
 
 ```toml
 [dependencies]
-spsc-ring = "0.3"
+spsc-ring = "0.1"
 ```
 
 ```rust
