@@ -47,3 +47,17 @@ jobs:
 
       - name: Security audit
         run: cargo audit
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Miri
+        run: cargo miri test
