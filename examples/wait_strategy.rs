@@ -3,19 +3,24 @@ use std::thread;
 use std::time::Duration;
 
 fn run(name: &str, strategy: WaitStrategy) {
-    let (tx, rx) = ring::<u64>(64);
+    let (tx, rx) = ring::<u64>(64).unwrap();
     let count = 10_000u64;
 
     let producer = thread::spawn(move || {
         for i in 0..count {
-            tx.push(i, &strategy);
+            if tx.push(i, &strategy).is_err() {
+                break;
+            }
         }
     });
 
     let consumer = thread::spawn(move || {
         let mut last = 0u64;
         for _ in 0..count {
-            last = rx.pop(&strategy);
+            match rx.pop(&strategy) {
+                Ok(v) => last = v,
+                Err(_) => break,
+            }
         }
         last
     });

@@ -7,12 +7,16 @@ fn throughput_1m(c: &mut Criterion) {
 
     c.bench_function("spsc_1M_events", |b| {
         b.iter(|| {
-            let (tx, rx) = ring(1024);
+            let (tx, rx) = ring(1024).unwrap();
 
             let producer = thread::spawn(move || {
                 for i in 0..count {
-                    while tx.try_push(black_box(i)).is_err() {
-                        std::hint::spin_loop();
+                    loop {
+                        match tx.try_push(black_box(i)) {
+                            Ok(()) => break,
+                            Err(spsc_ring::TrySendError::Full(_)) => std::hint::spin_loop(),
+                            Err(spsc_ring::TrySendError::Disconnected(_)) => return,
+                        }
                     }
                 }
             });
@@ -20,10 +24,10 @@ fn throughput_1m(c: &mut Criterion) {
             let consumer = thread::spawn(move || {
                 let mut n = 0usize;
                 while n < count {
-                    if rx.try_pop().is_some() {
-                        n += 1;
-                    } else {
-                        std::hint::spin_loop();
+                    match rx.try_pop() {
+                        Ok(_) => n += 1,
+                        Err(spsc_ring::TryRecvError::Empty) => std::hint::spin_loop(),
+                        Err(spsc_ring::TryRecvError::Disconnected) => break,
                     }
                 }
                 n

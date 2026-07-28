@@ -2,7 +2,7 @@ use spsc_ring::ring;
 use std::thread;
 
 fn main() {
-    let (tx, rx) = ring::<u32>(256);
+    let (tx, rx) = ring::<u32>(256).unwrap();
     let data: Vec<u32> = (0..1024).collect();
     let data_clone = data.clone();
 
