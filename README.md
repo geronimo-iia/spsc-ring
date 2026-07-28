@@ -13,7 +13,7 @@ Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero de
 - **Cache-line padded** — producer/consumer cursors on separate cache lines (false-sharing eliminated by design)
 - **Zero dependencies** — pure `std`, no optional feature flags pulling in extra crates
 - **Compile-time SPSC contract** — `Producer<T>` and `Consumer<T>` are `Send` but not `Clone`
-- **Minimal surface** — three operations (`try_push`, `try_pop`, `len`), nothing else to audit
+- **Minimal surface** — `try_push`, `try_pop`, `push_slice`, `pop_into_slice`, `len` — nothing else to audit
 
 ## Performance
 
@@ -27,11 +27,11 @@ Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero de
 | Explicit memory ordering (Acq/Rel) | ✅ | unspecified | ✅ |
 | Zero dependencies | ✅ | optional dep | ✅ |
 | API surface | minimal | large | medium |
-| Bulk slice ops | ❌ | ✅ | ✅ |
+| Bulk slice ops | ✅ | ✅ | ✅ |
 | `no_alloc` / static storage | ❌ | ✅ | ❌ |
 | Async / blocking variants | ❌ | ✅ | ❌ |
 
-Choose `spsc-ring` when you want the smallest, most auditable SPSC queue with guaranteed cache-line isolation and no transitive dependencies. Choose `ringbuf` when you need bulk I/O, static allocation, or async wrappers.
+Choose `spsc-ring` when you want the smallest, most auditable SPSC queue with guaranteed cache-line isolation and no transitive dependencies. Choose `ringbuf` when you need static allocation or async wrappers.
 
 ## Usage
 
@@ -75,6 +75,8 @@ assert_eq!(received, (0..100).collect::<Vec<_>>());
 | `Producer::is_empty()` | Returns `true` if buffer appears empty. |
 | `Producer::is_full()` | Returns `true` if buffer appears full. |
 | `Consumer::is_empty()` | Returns `true` if buffer appears empty. |
+| `Producer::push_slice(&[T])` | Push items from slice until full. Returns count pushed. Requires `T: Copy`. |
+| `Consumer::pop_into_slice(&mut [T])` | Pop items into slice until empty or full. Returns count popped. Requires `T: Copy`. |
 
 ## MSRV
 
