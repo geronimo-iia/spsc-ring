@@ -744,9 +744,11 @@ mod tests {
     fn wait_strategy_sleep_push_pop() {
         use std::time::Duration;
         let (tx, rx) = ring(4).unwrap();
-        tx.push(99u64, &WaitStrategy::Sleep(Duration::from_millis(1))).unwrap();
+        tx.push(99u64, &WaitStrategy::Sleep(Duration::from_millis(1)))
+            .unwrap();
         assert_eq!(
-            rx.pop(&WaitStrategy::Sleep(Duration::from_millis(1))).unwrap(),
+            rx.pop(&WaitStrategy::Sleep(Duration::from_millis(1)))
+                .unwrap(),
             99u64
         );
     }
