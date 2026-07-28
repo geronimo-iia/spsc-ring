@@ -13,4 +13,4 @@ labels: bug
 **Environment**
 - OS:
 - Rust version:
-- ring-rs version:
+- spsc-ring version:
