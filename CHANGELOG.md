@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-28
-
 ### Added
 
 - `ring<T>(capacity)` — create SPSC ring buffer; returns `(Producer<T>, Consumer<T>)` pair
@@ -20,5 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Criterion benchmark: 1M events SPSC throughput
 - 9 unit tests covering push/pop, fullness, emptiness, FIFO order, wrap-around, concurrent SPSC, panics
 
-[Unreleased]: https://github.com/geronimo-iia/ring-rs/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/geronimo-iia/ring-rs/releases/tag/v0.1.0
+### Changed
+
+- Crate and repository renamed from `ring-rs` to `spsc-ring`
+
