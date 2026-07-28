@@ -160,4 +160,4 @@ Rust 1.95 (stable). No nightly required.
 
 ## License
 
-MIT OR Apache-2.0
+[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)
