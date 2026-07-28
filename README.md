@@ -1,32 +1,47 @@
-# ring-rs
+# spsc-ring
 
 Lock-free SPSC ring buffer. Sequence-number protocol, cache-line padded, zero dependencies.
 
-[![CI](https://github.com/geronimo-iia/ring-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/geronimo-iia/ring-rs/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/ring-rs.svg)](https://crates.io/crates/ring-rs)
-[![docs.rs](https://docs.rs/ring-rs/badge.svg)](https://docs.rs/ring-rs)
+[![CI](https://github.com/geronimo-iia/spsc-ring/actions/workflows/ci.yml/badge.svg)](https://github.com/geronimo-iia/spsc-ring/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/spsc-ring.svg)](https://crates.io/crates/spsc-ring)
+[![docs.rs](https://docs.rs/spsc-ring/badge.svg)](https://docs.rs/spsc-ring)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 ## Features
 
 - **Lock-free SPSC** — sequence-number protocol, Acquire/Release only
-- **Cache-line padded** — producer/consumer cursors on separate cache lines
-- **Zero dependencies** — pure `std`
+- **Cache-line padded** — producer/consumer cursors on separate cache lines (false-sharing eliminated by design)
+- **Zero dependencies** — pure `std`, no optional feature flags pulling in extra crates
 - **Compile-time SPSC contract** — `Producer<T>` and `Consumer<T>` are `Send` but not `Clone`
+- **Minimal surface** — three operations (`try_push`, `try_pop`, `len`), nothing else to audit
 
 ## Performance
 
 118M events/sec, 8ns/event (1024-slot buffer, measured on PoC-E).
 
+## Comparison
+
+| | spsc-ring | [ringbuf](https://crates.io/crates/ringbuf) | [rtrb](https://crates.io/crates/rtrb) |
+|---|---|---|---|
+| Cache-line padded | ✅ | ❌ | ✅ |
+| Explicit memory ordering (Acq/Rel) | ✅ | unspecified | ✅ |
+| Zero dependencies | ✅ | optional dep | ✅ |
+| API surface | minimal | large | medium |
+| Bulk slice ops | ❌ | ✅ | ✅ |
+| `no_alloc` / static storage | ❌ | ✅ | ❌ |
+| Async / blocking variants | ❌ | ✅ | ❌ |
+
+Choose `spsc-ring` when you want the smallest, most auditable SPSC queue with guaranteed cache-line isolation and no transitive dependencies. Choose `ringbuf` when you need bulk I/O, static allocation, or async wrappers.
+
 ## Usage
 
 ```toml
 [dependencies]
-ring-rs = "0.1"
+spsc-ring = "0.1"
 ```
 
 ```rust
-use ring_rs::ring;
+use spsc_ring::ring;
 use std::thread;
 
 let (tx, rx) = ring::<u64>(64);
