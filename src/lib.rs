@@ -783,6 +783,19 @@ mod tests {
     }
 
     #[test]
+    fn try_pop_drains_buffered_items_after_producer_drop() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        tx.try_push(1).unwrap();
+        tx.try_push(2).unwrap();
+        tx.try_push(3).unwrap();
+        drop(tx);
+        assert_eq!(rx.try_pop(), Ok(1));
+        assert_eq!(rx.try_pop(), Ok(2));
+        assert_eq!(rx.try_pop(), Ok(3));
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Disconnected));
+    }
+
+    #[test]
     fn error_types_exist() {
         let _: RecvError = RecvError;
         let _: SendError<u32> = SendError(42);
