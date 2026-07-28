@@ -173,6 +173,7 @@ struct RingBuffer<T> {
     mask: usize,
     head: PaddedAtomicUsize,
     tail: PaddedAtomicUsize,
+    closed: AtomicBool,
 }
 
 // SAFETY: The SPSC contract is enforced by the type system — only one Producer
@@ -206,6 +207,7 @@ pub fn ring<T: Send>(capacity: usize) -> (Producer<T>, Consumer<T>) {
         mask: capacity - 1,
         head: PaddedAtomicUsize::new(0),
         tail: PaddedAtomicUsize::new(0),
+        closed: AtomicBool::new(false),
     });
 
     (
@@ -227,6 +229,12 @@ pub struct Consumer<T> {
 }
 
 impl<T> Producer<T> {
+    /// Returns `true` if the consumer has been dropped.
+    #[must_use]
+    pub fn is_disconnected(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
     /// Push a value. Returns `Err(value)` if the buffer is full.
     ///
     /// # Errors
@@ -291,6 +299,12 @@ impl<T> Producer<T> {
     }
 }
 
+impl<T> Drop for Producer<T> {
+    fn drop(&mut self) {
+        self.inner.closed.store(true, Ordering::Release);
+    }
+}
+
 impl<T: Copy> Producer<T> {
     /// Push as many items from `src` as fit. Returns count pushed.
     pub fn push_slice(&self, src: &[T]) -> usize {
@@ -305,7 +319,19 @@ impl<T: Copy> Producer<T> {
     }
 }
 
+impl<T> Drop for Consumer<T> {
+    fn drop(&mut self) {
+        self.inner.closed.store(true, Ordering::Release);
+    }
+}
+
 impl<T> Consumer<T> {
+    /// Returns `true` if the producer has been dropped.
+    #[must_use]
+    pub fn is_disconnected(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
     /// Pop a value. Returns `None` if the buffer is empty.
     #[must_use]
     pub fn try_pop(&self) -> Option<T> {
@@ -562,6 +588,38 @@ mod tests {
         let received = consumer.join().unwrap();
         let expected: Vec<u32> = (0..1024).collect();
         assert_eq!(received, expected);
+    }
+
+    #[test]
+    #[ignore = "depends on Task 3+4 signatures"]
+    fn producer_drop_signals_disconnected() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        drop(tx);
+        assert_eq!(rx.try_pop(), Err(TryRecvError::Disconnected));
+    }
+
+    #[test]
+    #[ignore = "depends on Task 3+4 signatures"]
+    fn consumer_drop_signals_disconnected() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        drop(rx);
+        assert_eq!(tx.try_push(1), Err(TrySendError::Disconnected(1)));
+    }
+
+    #[test]
+    #[ignore = "depends on Task 3 ring() Result signature"]
+    fn is_disconnected_false_while_both_live() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        assert!(!tx.is_disconnected());
+        assert!(!rx.is_disconnected());
+    }
+
+    #[test]
+    #[ignore = "depends on Task 3 ring() Result signature"]
+    fn is_disconnected_true_after_drop() {
+        let (tx, rx) = ring::<u32>(4).unwrap();
+        drop(rx);
+        assert!(tx.is_disconnected());
     }
 
     #[test]
