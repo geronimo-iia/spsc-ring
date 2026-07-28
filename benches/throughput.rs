@@ -20,10 +20,12 @@ fn throughput_1m(c: &mut Criterion) {
             let consumer = thread::spawn(move || {
                 let mut n = 0usize;
                 while n < count {
-                    if rx.try_pop().is_ok() {
-                        n += 1;
-                    } else {
-                        std::hint::spin_loop();
+                    match rx.try_pop() {
+                        Ok(v) => {
+                            black_box(v);
+                            n += 1;
+                        }
+                        Err(_) => std::hint::spin_loop(),
                     }
                 }
                 n
@@ -51,14 +53,15 @@ fn bench_push_slice_1m(c: &mut Criterion) {
                 while sent < COUNT {
                     let remaining = COUNT - sent;
                     let chunk = &src[..remaining.min(CHUNK)];
-                    loop {
-                        let n = tx.push_slice(chunk);
-                        sent += n;
-                        if n == chunk.len() {
-                            break;
+                    let mut offset = 0usize;
+                    while offset < chunk.len() {
+                        let n = tx.push_slice(&chunk[offset..]);
+                        offset += n;
+                        if n == 0 {
+                            std::hint::spin_loop();
                         }
-                        std::hint::spin_loop();
                     }
+                    sent += chunk.len();
                 }
             });
 
@@ -67,6 +70,7 @@ fn bench_push_slice_1m(c: &mut Criterion) {
                 let mut received = 0usize;
                 while received < COUNT {
                     let n = rx.pop_into_slice(&mut dst);
+                    black_box(&dst);
                     received += n;
                     if n == 0 {
                         std::hint::spin_loop();
@@ -102,14 +106,15 @@ fn bench_push_slice_chunk_sizes(c: &mut Criterion) {
                         while sent < COUNT {
                             let remaining = COUNT - sent;
                             let chunk = &src[..remaining.min(chunk_size)];
-                            loop {
-                                let n = tx.push_slice(chunk);
-                                sent += n;
-                                if n == chunk.len() {
-                                    break;
+                            let mut offset = 0usize;
+                            while offset < chunk.len() {
+                                let n = tx.push_slice(&chunk[offset..]);
+                                offset += n;
+                                if n == 0 {
+                                    std::hint::spin_loop();
                                 }
-                                std::hint::spin_loop();
                             }
+                            sent += chunk.len();
                         }
                     });
 
@@ -118,6 +123,7 @@ fn bench_push_slice_chunk_sizes(c: &mut Criterion) {
                         let mut received = 0usize;
                         while received < COUNT {
                             let n = rx.pop_into_slice(&mut dst);
+                            black_box(&dst);
                             received += n;
                             if n == 0 {
                                 std::hint::spin_loop();
